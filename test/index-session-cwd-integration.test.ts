@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../src/model-discovery.js", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("../src/model-discovery.js")>();
+	const actual =
+		await importOriginal<typeof import("../src/model-discovery.js")>();
 	return {
 		...actual,
 		discoverModels: vi.fn(),
@@ -38,6 +39,9 @@ function createMockAgent(): SDKAgent {
 }
 
 vi.mock("@cursor/sdk", () => ({
+	Cursor: {
+		configure: vi.fn(),
+	},
 	Agent: {
 		create: vi.fn().mockResolvedValue(createMockAgent()),
 	},
@@ -75,7 +79,10 @@ describe("extension session cwd integration", () => {
 		cursorSessionScopeTestUtils.reset();
 		mockedAgentCreate.mockResolvedValue(createMockAgent());
 		mockedDiscover.mockResolvedValue([
-			makeProviderModelConfig("composer-2.5", { name: "Cursor Composer 2.5", input: ["text"] }),
+			makeProviderModelConfig("composer-2.5", {
+				name: "Cursor Composer 2.5",
+				input: ["text"],
+			}),
 		]);
 	});
 
@@ -85,7 +92,9 @@ describe("extension session cwd integration", () => {
 	});
 
 	it("passes pi session cwd from extension registration through streamSimple to Agent.create", async () => {
-		const sessionDir = mkdtempSync(join(tmpdir(), "pi-cursor-index-agent-cwd-"));
+		const sessionDir = mkdtempSync(
+			join(tmpdir(), "pi-cursor-index-agent-cwd-"),
+		);
 		try {
 			const pi = createExtensionRegistrationPi();
 			await extensionFactory(pi);
@@ -95,7 +104,11 @@ describe("extension session cwd integration", () => {
 			const streamSimple = pi._registered[0]?.config.streamSimple;
 			expect(streamSimple).toBe(streamCursorLazy);
 
-			await collectEvents(streamSimple!(makeModel("composer-2.5"), makeContext(), { apiKey: "test-key" }));
+			await collectEvents(
+				streamSimple!(makeModel("composer-2.5"), makeContext(), {
+					apiKey: "test-key",
+				}),
+			);
 
 			expect(mockedAgentCreate).toHaveBeenCalledWith(
 				expect.objectContaining({

@@ -1,7 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { computeCursorContextFingerprint, shouldBootstrapCursorContext } from "../src/context.js";
-import { createEventHarness, createExtensionTestContext, makeContext } from "./helpers/pi-harness.js";
-import { __testUtils as cursorSessionScopeTestUtils, registerCursorSessionScope } from "../src/cursor-session-scope.js";
+import {
+	computeCursorContextFingerprint,
+	shouldBootstrapCursorContext,
+} from "../src/context.js";
+import {
+	createEventHarness,
+	createExtensionTestContext,
+	makeContext,
+} from "./helpers/pi-harness.js";
+import {
+	__testUtils as cursorSessionScopeTestUtils,
+	registerCursorSessionScope,
+} from "../src/cursor-session-scope.js";
 import {
 	acquireSessionCursorAgent,
 	__testUtils as sessionAgentTestUtils,
@@ -38,7 +48,9 @@ describe("cursor-session-agent", () => {
 		expect(second.created).toBe(false);
 		expect(first.agent).toBe(second.agent);
 		expect(createAgent).toHaveBeenCalledTimes(1);
-		expect(createAgent).toHaveBeenCalledWith(expect.objectContaining({ mode: "agent" }));
+		expect(createAgent).toHaveBeenCalledWith(
+			expect.objectContaining({ mode: "agent" }),
+		);
 		expect(mockDispose).not.toHaveBeenCalled();
 	});
 
@@ -57,7 +69,30 @@ describe("cursor-session-agent", () => {
 			createAgent,
 		});
 
-		expect(createAgent).toHaveBeenCalledWith(expect.objectContaining({ mode: "plan" }));
+		expect(createAgent).toHaveBeenCalledWith(
+			expect.objectContaining({ mode: "plan" }),
+		);
+	});
+
+	it("includes Cursor SDK HTTP/1.1 transport in the session agent pool key", () => {
+		const baseParams = {
+			apiKey: "test-key",
+			agentMode: "agent" as const,
+			cwd: "/tmp/project",
+			modelSelection: { id: "composer-2.5" },
+		};
+
+		expect(
+			sessionAgentTestUtils.buildSessionAgentPoolKey("scope", {
+				...baseParams,
+				useHttp1ForAgent: false,
+			}),
+		).not.toBe(
+			sessionAgentTestUtils.buildSessionAgentPoolKey("scope", {
+				...baseParams,
+				useHttp1ForAgent: true,
+			}),
+		);
 	});
 
 	it("keeps Cursor SDK mode out of the session agent pool key", async () => {
@@ -76,7 +111,10 @@ describe("cursor-session-agent", () => {
 		};
 
 		const first = await acquireSessionCursorAgent(params);
-		const second = await acquireSessionCursorAgent({ ...params, agentMode: "plan" });
+		const second = await acquireSessionCursorAgent({
+			...params,
+			agentMode: "plan",
+		});
 
 		expect(second.created).toBe(false);
 		expect(second.agent).toBe(first.agent);
@@ -105,7 +143,9 @@ describe("cursor-session-agent", () => {
 
 		const first = await acquireSessionCursorAgent(params);
 		first.trackRunCompletion(completion);
-		expect(sessionAgentTestUtils.getSessionCursorAgentPoolState(scopeKey).status).toBe("busy");
+		expect(
+			sessionAgentTestUtils.getSessionCursorAgentPoolState(scopeKey).status,
+		).toBe("busy");
 
 		const secondAcquirePromise = acquireSessionCursorAgent(params);
 		let reacquireResolved = false;
@@ -121,7 +161,9 @@ describe("cursor-session-agent", () => {
 		expect(reacquireResolved).toBe(true);
 		expect(second.agent).toBe(first.agent);
 		expect(second.created).toBe(false);
-		expect(sessionAgentTestUtils.getSessionCursorAgentPoolState(scopeKey).status).toBe("ready");
+		expect(
+			sessionAgentTestUtils.getSessionCursorAgentPoolState(scopeKey).status,
+		).toBe("ready");
 	});
 
 	it("does not await stale sdk run completion after pool replacement", async () => {
@@ -171,9 +213,15 @@ describe("cursor-session-agent", () => {
 			// never resolves
 		});
 
-		const first = await acquireSessionCursorAgent({ ...baseParams, apiKey: "key-a" });
+		const first = await acquireSessionCursorAgent({
+			...baseParams,
+			apiKey: "key-a",
+		});
 		first.trackRunCompletion(completion);
-		const replacementPromise = acquireSessionCursorAgent({ ...baseParams, apiKey: "key-b" });
+		const replacementPromise = acquireSessionCursorAgent({
+			...baseParams,
+			apiKey: "key-b",
+		});
 
 		await vi.waitFor(() => expect(createAgent).toHaveBeenCalledTimes(2));
 		const replacement = await replacementPromise;
@@ -199,7 +247,9 @@ describe("cursor-session-agent", () => {
 			modelSelection: { id: "composer-2.5" },
 			createAgent,
 		};
-		const context = makeContext([{ role: "user", content: "Hello", timestamp: 1 }]);
+		const context = makeContext([
+			{ role: "user", content: "Hello", timestamp: 1 },
+		]);
 
 		const lease = await acquireSessionCursorAgent(params);
 		await sessionAgentTestUtils.resetSessionCursorAgent(scopeKey);
@@ -275,7 +325,9 @@ describe("cursor-session-agent", () => {
 		await Promise.resolve();
 		await sessionAgentTestUtils.disposeSessionCursorAgent(scopeKey);
 
-		await expect(blockedAcquirePromise).rejects.toBeInstanceOf(sessionAgentTestUtils.SessionCursorAgentScopeClosedError);
+		await expect(blockedAcquirePromise).rejects.toBeInstanceOf(
+			sessionAgentTestUtils.SessionCursorAgentScopeClosedError,
+		);
 		expect(mockDispose).toHaveBeenCalledTimes(1);
 	});
 
@@ -339,7 +391,9 @@ describe("cursor-session-agent", () => {
 		};
 
 		const lease = await acquireSessionCursorAgent(params);
-		const context = makeContext([{ role: "user", content: "Hello", timestamp: 1 }]);
+		const context = makeContext([
+			{ role: "user", content: "Hello", timestamp: 1 },
+		]);
 
 		lease.commitSend(context, true);
 		expect(lease.sendState.incrementalSendCount).toBe(0);
@@ -398,17 +452,27 @@ describe("cursor-session-agent", () => {
 
 		const acquirePromise = acquireSessionCursorAgent(params);
 		await vi.waitFor(() => expect(createAgent).toHaveBeenCalledTimes(1));
-		await sessionAgentTestUtils.disposeSessionCursorAgent("/tmp/sessions/test.jsonl");
+		await sessionAgentTestUtils.disposeSessionCursorAgent(
+			"/tmp/sessions/test.jsonl",
+		);
 		resolveLateCreate({
 			agentId: "agent-late",
 			[Symbol.asyncDispose]: mockDisposeLate,
 		});
 
-		await expect(acquirePromise).rejects.toBeInstanceOf(sessionAgentTestUtils.SessionCursorAgentScopeClosedError);
+		await expect(acquirePromise).rejects.toBeInstanceOf(
+			sessionAgentTestUtils.SessionCursorAgentScopeClosedError,
+		);
 		expect(mockDisposeLate).toHaveBeenCalledTimes(1);
 		expect(createAgent).toHaveBeenCalledTimes(1);
-		expect(sessionAgentTestUtils.sessionAgentsByScope.has("/tmp/sessions/test.jsonl")).toBe(false);
-		await expect(acquireSessionCursorAgent(params)).rejects.toBeInstanceOf(sessionAgentTestUtils.SessionCursorAgentScopeClosedError);
+		expect(
+			sessionAgentTestUtils.sessionAgentsByScope.has(
+				"/tmp/sessions/test.jsonl",
+			),
+		).toBe(false);
+		await expect(acquireSessionCursorAgent(params)).rejects.toBeInstanceOf(
+			sessionAgentTestUtils.SessionCursorAgentScopeClosedError,
+		);
 	});
 
 	it("does not retry a superseded in-flight acquire when replaced by a different pool key", async () => {
@@ -437,16 +501,24 @@ describe("cursor-session-agent", () => {
 			createAgent,
 		};
 
-		const firstAcquirePromise = acquireSessionCursorAgent({ ...baseParams, apiKey: "key-a" });
+		const firstAcquirePromise = acquireSessionCursorAgent({
+			...baseParams,
+			apiKey: "key-a",
+		});
 		await vi.waitFor(() => expect(createAgent).toHaveBeenCalledTimes(1));
-		const secondAcquirePromise = acquireSessionCursorAgent({ ...baseParams, apiKey: "key-b" });
+		const secondAcquirePromise = acquireSessionCursorAgent({
+			...baseParams,
+			apiKey: "key-b",
+		});
 		await vi.waitFor(() => expect(createAgent).toHaveBeenCalledTimes(2));
 		resolveLateCreate({
 			agentId: "agent-late",
 			[Symbol.asyncDispose]: mockDisposeLate,
 		});
 
-		await expect(firstAcquirePromise).rejects.toBeInstanceOf(sessionAgentTestUtils.SessionCursorAgentCreationSupersededError);
+		await expect(firstAcquirePromise).rejects.toBeInstanceOf(
+			sessionAgentTestUtils.SessionCursorAgentCreationSupersededError,
+		);
 		const secondLease = await secondAcquirePromise;
 
 		expect(mockDisposeLate).toHaveBeenCalledTimes(1);
@@ -509,10 +581,14 @@ describe("cursor-session-agent", () => {
 
 		const acquirePromise = acquireSessionCursorAgent(params);
 		await vi.waitFor(() => expect(createAgent).toHaveBeenCalledTimes(1));
-		await sessionAgentTestUtils.disposeSessionCursorAgent("/tmp/sessions/test.jsonl");
+		await sessionAgentTestUtils.disposeSessionCursorAgent(
+			"/tmp/sessions/test.jsonl",
+		);
 		rejectCreate(new Error("ConnectError: [unavailable] read ETIMEDOUT"));
 
-		await expect(acquirePromise).rejects.toThrow("ConnectError: [unavailable] read ETIMEDOUT");
+		await expect(acquirePromise).rejects.toThrow(
+			"ConnectError: [unavailable] read ETIMEDOUT",
+		);
 		await Promise.resolve();
 		expect(rejections).toEqual([]);
 		process.off("unhandledRejection", onUnhandledRejection);
@@ -524,16 +600,76 @@ describe("cursor-session-agent", () => {
 			contextFingerprint: computeCursorContextFingerprint({
 				messages: [
 					{ role: "user", content: "Hello", timestamp: 1 },
-					{ role: "assistant", content: [{ type: "text", text: "Hi" }], api: "cursor-sdk", provider: "cursor", model: "test", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: 2 },
+					{
+						role: "assistant",
+						content: [{ type: "text", text: "Hi" }],
+						api: "cursor-sdk",
+						provider: "cursor",
+						model: "test",
+						usage: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 0,
+							cost: {
+								input: 0,
+								output: 0,
+								cacheRead: 0,
+								cacheWrite: 0,
+								total: 0,
+							},
+						},
+						stopReason: "stop",
+						timestamp: 2,
+					},
 					{ role: "user", content: "More", timestamp: 3 },
-					{ role: "assistant", content: [{ type: "text", text: "Ok" }], api: "cursor-sdk", provider: "cursor", model: "test", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: 4 },
+					{
+						role: "assistant",
+						content: [{ type: "text", text: "Ok" }],
+						api: "cursor-sdk",
+						provider: "cursor",
+						model: "test",
+						usage: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 0,
+							cost: {
+								input: 0,
+								output: 0,
+								cacheRead: 0,
+								cacheWrite: 0,
+								total: 0,
+							},
+						},
+						stopReason: "stop",
+						timestamp: 4,
+					},
 				],
 			}),
 			incrementalSendCount: 0,
 		};
 		const context = makeContext([
 			{ role: "user", content: "Hello", timestamp: 1 },
-			{ role: "assistant", content: [{ type: "text", text: "Hi" }], api: "cursor-sdk", provider: "cursor", model: "test", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: 2 },
+			{
+				role: "assistant",
+				content: [{ type: "text", text: "Hi" }],
+				api: "cursor-sdk",
+				provider: "cursor",
+				model: "test",
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "stop",
+				timestamp: 2,
+			},
 		]);
 
 		expect(shouldBootstrapCursorContext(sendState, context)).toBe(true);
@@ -579,9 +715,17 @@ describe("cursor-session-agent", () => {
 			createAgent,
 		});
 
-		expect(sessionAgentTestUtils.sessionAgentsByScope.has("/tmp/sessions/test.jsonl")).toBe(true);
+		expect(
+			sessionAgentTestUtils.sessionAgentsByScope.has(
+				"/tmp/sessions/test.jsonl",
+			),
+		).toBe(true);
 		await pi.runSessionShutdown({ reason: "quit" });
-		expect(sessionAgentTestUtils.sessionAgentsByScope.has("/tmp/sessions/test.jsonl")).toBe(false);
+		expect(
+			sessionAgentTestUtils.sessionAgentsByScope.has(
+				"/tmp/sessions/test.jsonl",
+			),
+		).toBe(false);
 		expect(mockDispose).toHaveBeenCalledTimes(1);
 	});
 
@@ -638,7 +782,9 @@ describe("cursor-session-agent", () => {
 			},
 		});
 		const first = await acquireSessionCursorAgent(params);
-		expect(first.scopeKey).toBe(`${cursorSessionScopeTestUtils.EPHEMERAL_SESSION_SCOPE_PREFIX}ephemeral-a`);
+		expect(first.scopeKey).toBe(
+			`${cursorSessionScopeTestUtils.EPHEMERAL_SESSION_SCOPE_PREFIX}ephemeral-a`,
+		);
 
 		await pi.runSessionShutdown({ reason: "new" });
 		await pi.runSessionStart({
@@ -650,7 +796,9 @@ describe("cursor-session-agent", () => {
 		});
 		const second = await acquireSessionCursorAgent(params);
 
-		expect(second.scopeKey).toBe(`${cursorSessionScopeTestUtils.EPHEMERAL_SESSION_SCOPE_PREFIX}ephemeral-b`);
+		expect(second.scopeKey).toBe(
+			`${cursorSessionScopeTestUtils.EPHEMERAL_SESSION_SCOPE_PREFIX}ephemeral-b`,
+		);
 		expect(first.agent).not.toBe(second.agent);
 		expect(createAgent).toHaveBeenCalledTimes(2);
 		expect(mockDispose).toHaveBeenCalledTimes(1);
@@ -718,7 +866,10 @@ describe("cursor-session-agent", () => {
 
 		registerCursorSessionScope(pi);
 		registerCursorSessionAgentLifecycle(pi);
-		cursorSessionScopeTestUtils.set("/tmp/project", "/tmp/sessions/session-a.jsonl");
+		cursorSessionScopeTestUtils.set(
+			"/tmp/project",
+			"/tmp/sessions/session-a.jsonl",
+		);
 		await acquireSessionCursorAgent({
 			apiKey: "test-key",
 			agentMode: "agent" as const,
@@ -738,7 +889,11 @@ describe("cursor-session-agent", () => {
 			}),
 		);
 
-		expect(sessionAgentTestUtils.sessionAgentsByScope.has("/tmp/sessions/session-a.jsonl")).toBe(false);
+		expect(
+			sessionAgentTestUtils.sessionAgentsByScope.has(
+				"/tmp/sessions/session-a.jsonl",
+			),
+		).toBe(false);
 		expect(mockDispose).toHaveBeenCalledTimes(1);
 	});
 
@@ -785,9 +940,17 @@ describe("cursor-session-agent", () => {
 			createAgent,
 		});
 
-		expect(sessionAgentTestUtils.sessionAgentsByScope.has("/tmp/sessions/test.jsonl")).toBe(true);
+		expect(
+			sessionAgentTestUtils.sessionAgentsByScope.has(
+				"/tmp/sessions/test.jsonl",
+			),
+		).toBe(true);
 		await pi.runSessionTree();
-		expect(sessionAgentTestUtils.sessionAgentsByScope.has("/tmp/sessions/test.jsonl")).toBe(false);
+		expect(
+			sessionAgentTestUtils.sessionAgentsByScope.has(
+				"/tmp/sessions/test.jsonl",
+			),
+		).toBe(false);
 		expect(mockDispose).toHaveBeenCalledTimes(1);
 	});
 
