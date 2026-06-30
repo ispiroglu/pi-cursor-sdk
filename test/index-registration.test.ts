@@ -42,7 +42,9 @@ describe("extension registration and discovery", () => {
 	beforeEach(resetIndexExtensionTestState);
 
 	it("registers Cursor runtime controls and one provider with correct fields", async () => {
-		const mockModels = [makeProviderModelConfig("composer-2", { name: "Cursor Composer 2" })];
+		const mockModels = [
+			makeProviderModelConfig("composer-2", { name: "Cursor Composer 2" }),
+		];
 		mockedDiscover.mockResolvedValueOnce(mockModels);
 
 		process.env.PI_CURSOR_NATIVE_TOOL_DISPLAY = "1";
@@ -64,19 +66,37 @@ describe("extension registration and discovery", () => {
 		);
 		expect(pi.registerCommand).toHaveBeenCalledWith(
 			"cursor-fast",
-			expect.objectContaining({ description: expect.stringContaining("Toggle Cursor fast") }),
+			expect.objectContaining({
+				description: expect.stringContaining("Toggle Cursor fast"),
+			}),
 		);
 		expect(pi.registerCommand).toHaveBeenCalledWith(
 			"cursor-mode",
-			expect.objectContaining({ description: expect.stringContaining("Set Cursor SDK conversation mode") }),
+			expect.objectContaining({
+				description: expect.stringContaining(
+					"Set Cursor SDK conversation mode",
+				),
+			}),
 		);
 		expect(pi.registerCommand).toHaveBeenCalledWith(
 			"cursor-tools",
-			expect.objectContaining({ description: expect.stringContaining("Show live Cursor tool surfaces") }),
+			expect.objectContaining({
+				description: expect.stringContaining("Show live Cursor tool surfaces"),
+			}),
+		);
+		expect(pi.registerCommand).toHaveBeenCalledWith(
+			"cursor-http",
+			expect.objectContaining({
+				description: expect.stringContaining("Toggle Cursor SDK HTTP/1.1"),
+			}),
 		);
 		expect(pi.registerCommand).toHaveBeenCalledWith(
 			"cursor-refresh-models",
-			expect.objectContaining({ description: expect.stringContaining("Refresh the live Cursor model catalog") }),
+			expect.objectContaining({
+				description: expect.stringContaining(
+					"Refresh the live Cursor model catalog",
+				),
+			}),
 		);
 		expect(pi.registerTool).toHaveBeenCalledTimes(10);
 		expect(pi._tools.map((tool) => tool.name)).toEqual([
@@ -91,8 +111,14 @@ describe("extension registration and discovery", () => {
 			"edit",
 			"write",
 		]);
-		expect(pi._tools.find((tool) => tool.name === CURSOR_ASK_QUESTION_TOOL_NAME)?.promptSnippet).toContain("clarifying question");
-		expect(pi._tools.find((tool) => tool.name === CURSOR_ACTIVATE_SKILL_TOOL_NAME)?.promptSnippet).toContain("Agent Skill");
+		expect(
+			pi._tools.find((tool) => tool.name === CURSOR_ASK_QUESTION_TOOL_NAME)
+				?.promptSnippet,
+		).toContain("clarifying question");
+		expect(
+			pi._tools.find((tool) => tool.name === CURSOR_ACTIVATE_SKILL_TOOL_NAME)
+				?.promptSnippet,
+		).toContain("Agent Skill");
 		const replayTool = pi._tools.find((tool) => tool.name === "cursor");
 		expect(replayTool?.promptSnippet).toBeUndefined();
 		expect(replayTool?.promptGuidelines).toBeUndefined();
@@ -108,7 +134,10 @@ describe("extension registration and discovery", () => {
 			CURSOR_ASK_QUESTION_TOOL_NAME,
 		]);
 		expect(pi.on).toHaveBeenCalledWith("session_start", expect.any(Function));
-		expect(pi.on).toHaveBeenCalledWith("before_agent_start", expect.any(Function));
+		expect(pi.on).toHaveBeenCalledWith(
+			"before_agent_start",
+			expect.any(Function),
+		);
 		expect(pi.on).toHaveBeenCalledWith("turn_start", expect.any(Function));
 		expect(pi.on).toHaveBeenCalledWith("model_select", expect.any(Function));
 		expect(mockedDiscover).toHaveBeenCalledOnce();
@@ -124,7 +153,9 @@ describe("extension registration and discovery", () => {
 	});
 
 	it("registers a lazy Cursor stream wrapper that delegates only when invoked", async () => {
-		const mockModels = [makeProviderModelConfig("composer-2", { name: "Cursor Composer 2" })];
+		const mockModels = [
+			makeProviderModelConfig("composer-2", { name: "Cursor Composer 2" }),
+		];
 		mockedDiscover.mockResolvedValueOnce(mockModels);
 		const inner = createAssistantMessageEventStream();
 		mockedStreamCursor.mockImplementationOnce(() => inner);
@@ -132,7 +163,11 @@ describe("extension registration and discovery", () => {
 		await extensionFactory(pi);
 
 		expect(mockedStreamCursor).not.toHaveBeenCalled();
-		const stream = pi._registered[0].config.streamSimple!(makeModel("composer-2"), makeContext(), { apiKey: "test-key" });
+		const stream = pi._registered[0].config.streamSimple!(
+			makeModel("composer-2"),
+			makeContext(),
+			{ apiKey: "test-key" },
+		);
 		const resultPromise = stream.result();
 		await Promise.resolve();
 		const message = makeAssistantMessage("done");
@@ -152,7 +187,9 @@ describe("extension registration and discovery", () => {
 		expect(pi._activeToolNames()).toContain("cursor");
 		expect(pi._activeToolNames()).toContain(CURSOR_ASK_QUESTION_TOOL_NAME);
 
-		await pi.runModelSelect(makeHarnessModel("openai-codex", "openai-codex-responses", "gpt-5.5"));
+		await pi.runModelSelect(
+			makeHarnessModel("openai-codex", "openai-codex-responses", "gpt-5.5"),
+		);
 		expect(pi._activeToolNames()).not.toContain("cursor");
 		expect(pi._activeToolNames()).not.toContain(CURSOR_ASK_QUESTION_TOOL_NAME);
 		expect(pi._activeToolNames()).not.toContain("grep");
@@ -171,7 +208,10 @@ describe("extension registration and discovery", () => {
 		await extensionFactory(pi);
 		await pi.runSessionStart({ model: undefined });
 
-		expect(pi._tools.map((tool) => tool.name)).toEqual([CURSOR_ASK_QUESTION_TOOL_NAME, CURSOR_ACTIVATE_SKILL_TOOL_NAME]);
+		expect(pi._tools.map((tool) => tool.name)).toEqual([
+			CURSOR_ASK_QUESTION_TOOL_NAME,
+			CURSOR_ACTIVATE_SKILL_TOOL_NAME,
+		]);
 		expect(pi._activeToolNames()).not.toContain("cursor");
 		expect(pi._activeToolNames()).not.toContain("grep");
 		expect(pi._activeToolNames()).not.toContain(CURSOR_ASK_QUESTION_TOOL_NAME);
@@ -183,7 +223,11 @@ describe("extension registration and discovery", () => {
 		expect(pi._activeToolNames()).toContain("cursor");
 		expect(pi._activeToolNames()).toContain("grep");
 		expect(pi._activeToolNames()).toContain(CURSOR_ASK_QUESTION_TOOL_NAME);
-		expect(buildCursorPiToolBridgeSnapshot(pi).piToolNameToMcpToolName.get(CURSOR_ASK_QUESTION_TOOL_NAME)).toBe("pi__cursor_ask_question");
+		expect(
+			buildCursorPiToolBridgeSnapshot(pi).piToolNameToMcpToolName.get(
+				CURSOR_ASK_QUESTION_TOOL_NAME,
+			),
+		).toBe("pi__cursor_ask_question");
 
 		pi.setActiveTools(["read", "bash", "edit", "write"]);
 		expect(pi._activeToolNames()).not.toContain("cursor");
@@ -211,14 +255,25 @@ describe("extension registration and discovery", () => {
 		expect(buildCursorPiToolBridgeSnapshot(pi).tools).toEqual([]);
 	});
 
-	it.each(["json", "rpc"] as const)("registers native replay tools in %s mode for structured host-tool events", async (mode) => {
+	it.each([
+		"json",
+		"rpc",
+	] as const)("registers native replay tools in %s mode for structured host-tool events", async (mode) => {
 		mockedDiscover.mockResolvedValueOnce([]);
 		const pi = createExtensionPi();
 		await extensionFactory(pi);
 
 		await pi.runSessionStart({ mode, hasUI: false });
-		await pi.runBeforeAgentStart({ mode, hasUI: false, model: makeModel("composer-2.5") });
-		await pi.runTurnStart({ mode, hasUI: false, model: makeModel("composer-2.5") });
+		await pi.runBeforeAgentStart({
+			mode,
+			hasUI: false,
+			model: makeModel("composer-2.5"),
+		});
+		await pi.runTurnStart({
+			mode,
+			hasUI: false,
+			model: makeModel("composer-2.5"),
+		});
 
 		expect(pi._tools.map((tool) => tool.name)).toContain("cursor");
 		expect(pi._tools.map((tool) => tool.name)).toContain("grep");
@@ -233,10 +288,21 @@ describe("extension registration and discovery", () => {
 		await extensionFactory(pi);
 
 		await pi.runSessionStart({ mode: "print", hasUI: false });
-		await pi.runBeforeAgentStart({ mode: "print", hasUI: false, model: makeModel("composer-2.5") });
-		await pi.runTurnStart({ mode: "print", hasUI: false, model: makeModel("composer-2.5") });
+		await pi.runBeforeAgentStart({
+			mode: "print",
+			hasUI: false,
+			model: makeModel("composer-2.5"),
+		});
+		await pi.runTurnStart({
+			mode: "print",
+			hasUI: false,
+			model: makeModel("composer-2.5"),
+		});
 
-		expect(pi._tools.map((tool) => tool.name)).toEqual([CURSOR_ASK_QUESTION_TOOL_NAME, CURSOR_ACTIVATE_SKILL_TOOL_NAME]);
+		expect(pi._tools.map((tool) => tool.name)).toEqual([
+			CURSOR_ASK_QUESTION_TOOL_NAME,
+			CURSOR_ACTIVATE_SKILL_TOOL_NAME,
+		]);
 		expect(pi._activeToolNames()).toContain(CURSOR_ASK_QUESTION_TOOL_NAME);
 		expect(pi._activeToolNames()).not.toContain("cursor");
 		expect(pi._activeToolNames()).not.toContain("grep");
@@ -248,18 +314,30 @@ describe("extension registration and discovery", () => {
 		await extensionFactory(pi);
 
 		await pi.runSessionStart({ mode: "json", hasUI: false });
-		await pi.runTurnStart({ mode: "json", hasUI: false, model: makeModel("composer-2.5") });
+		await pi.runTurnStart({
+			mode: "json",
+			hasUI: false,
+			model: makeModel("composer-2.5"),
+		});
 
 		expect(pi._activeToolNames()).toContain("cursor");
 		expect(pi._activeToolNames()).toContain("grep");
 
-		await pi.runTurnStart({ mode: "print", hasUI: false, model: makeModel("composer-2.5") });
+		await pi.runTurnStart({
+			mode: "print",
+			hasUI: false,
+			model: makeModel("composer-2.5"),
+		});
 
 		expect(pi._activeToolNames()).toContain(CURSOR_ASK_QUESTION_TOOL_NAME);
 		expect(pi._activeToolNames()).not.toContain("cursor");
 		expect(pi._activeToolNames()).not.toContain("grep");
 
-		await pi.runTurnStart({ mode: "json", hasUI: false, model: makeModel("composer-2.5") });
+		await pi.runTurnStart({
+			mode: "json",
+			hasUI: false,
+			model: makeModel("composer-2.5"),
+		});
 
 		expect(pi._activeToolNames()).toContain("cursor");
 		expect(pi._activeToolNames()).toContain("grep");
@@ -274,7 +352,9 @@ describe("extension registration and discovery", () => {
 
 		const select = vi.fn().mockResolvedValue("Web app");
 		const input = vi.fn();
-		const tool = pi._tools.find((candidate) => candidate.name === CURSOR_ASK_QUESTION_TOOL_NAME);
+		const tool = pi._tools.find(
+			(candidate) => candidate.name === CURSOR_ASK_QUESTION_TOOL_NAME,
+		);
 		const result = await tool!.execute(
 			"question-1",
 			{
@@ -287,16 +367,25 @@ describe("extension registration and discovery", () => {
 			},
 			undefined,
 			undefined,
-			createExtensionTestContext({ ui: { notify: vi.fn(), setStatus: vi.fn(), select, input } }),
+			createExtensionTestContext({
+				ui: { notify: vi.fn(), setStatus: vi.fn(), select, input },
+			}),
 		);
 
-		expect(select).toHaveBeenCalledWith("What kind of calculator should Cursor plan?", ["Web app", "CLI"]);
+		expect(select).toHaveBeenCalledWith(
+			"What kind of calculator should Cursor plan?",
+			["Web app", "CLI"],
+		);
 		expect(input).not.toHaveBeenCalled();
-		expect(result.content).toEqual([{ type: "text", text: "User answered: Web app" }]);
+		expect(result.content).toEqual([
+			{ type: "text", text: "User answered: Web app" },
+		]);
 		expect(result.details).toMatchObject({
 			uiAvailable: true,
 			cancelled: false,
-			answers: [{ id: "question_1", answer: "Web app", value: "web", cancelled: false }],
+			answers: [
+				{ id: "question_1", answer: "Web app", value: "web", cancelled: false },
+			],
 		});
 	});
 
@@ -308,13 +397,24 @@ describe("extension registration and discovery", () => {
 		await extensionFactory(pi);
 		await pi.runSessionStart();
 
-		expect(cursorPiToolBridgeTestUtils.getRegisteredBridgeForTests()?.isEnabled()).toBe(true);
-		expect(pi.on).toHaveBeenCalledWith("session_shutdown", expect.any(Function));
+		expect(
+			cursorPiToolBridgeTestUtils.getRegisteredBridgeForTests()?.isEnabled(),
+		).toBe(true);
+		expect(pi.on).toHaveBeenCalledWith(
+			"session_shutdown",
+			expect.any(Function),
+		);
 		expect(pi._activeToolNames()).toContain(CURSOR_ASK_QUESTION_TOOL_NAME);
 
 		const snapshot = buildCursorPiToolBridgeSnapshot(pi);
-		expect(snapshot.piToolNameToMcpToolName.get(CURSOR_ASK_QUESTION_TOOL_NAME)).toBe("pi__cursor_ask_question");
-		expect(snapshot.tools.find((tool) => tool.piToolName === CURSOR_ASK_QUESTION_TOOL_NAME)?.description).toContain("Ask the user");
+		expect(
+			snapshot.piToolNameToMcpToolName.get(CURSOR_ASK_QUESTION_TOOL_NAME),
+		).toBe("pi__cursor_ask_question");
+		expect(
+			snapshot.tools.find(
+				(tool) => tool.piToolName === CURSOR_ASK_QUESTION_TOOL_NAME,
+			)?.description,
+		).toContain("Ask the user");
 	});
 
 	it("honors PI_CURSOR_PI_TOOL_BRIDGE=0 at the extension registration path", async () => {
@@ -326,7 +426,9 @@ describe("extension registration and discovery", () => {
 		await extensionFactory(pi);
 		await pi.runSessionStart();
 
-		expect(cursorPiToolBridgeTestUtils.getRegisteredBridgeForTests()?.isEnabled()).toBe(false);
+		expect(
+			cursorPiToolBridgeTestUtils.getRegisteredBridgeForTests()?.isEnabled(),
+		).toBe(false);
 		expect(pi.setActiveTools).not.toHaveBeenCalled();
 	});
 
@@ -349,7 +451,9 @@ describe("extension registration and discovery", () => {
 	});
 
 	it("refreshes Cursor models through a live command without reload", async () => {
-		const startupModels = [makeProviderModelConfig("composer-2", { name: "Cursor Composer 2" })];
+		const startupModels = [
+			makeProviderModelConfig("composer-2", { name: "Cursor Composer 2" }),
+		];
 		const refreshedModels = [
 			makeProviderModelConfig("gpt-5.5@1m", {
 				name: "GPT-5.5 @ 1m",
@@ -357,7 +461,9 @@ describe("extension registration and discovery", () => {
 				contextWindow: 1_000_000,
 			}),
 		];
-		mockedDiscover.mockResolvedValueOnce(startupModels).mockResolvedValueOnce(refreshedModels);
+		mockedDiscover
+			.mockResolvedValueOnce(startupModels)
+			.mockResolvedValueOnce(refreshedModels);
 		const pi = createExtensionPi();
 		await extensionFactory(pi);
 		const notify = vi.fn();
@@ -377,14 +483,20 @@ describe("extension registration and discovery", () => {
 		expect(pi._registered[0].config.models).toBe(startupModels);
 		expect(pi._registered[1].config.models).toBe(refreshedModels);
 		expect(pi._registered[1].config.streamSimple).toBe(streamCursorLazy);
-		expect(notify).toHaveBeenCalledWith("Cursor model catalog refreshed with 1 model.", "info");
+		expect(notify).toHaveBeenCalledWith(
+			"Cursor model catalog refreshed with 1 model.",
+			"info",
+		);
 	});
 
 	it("warns when live Cursor model refresh does not use a live catalog", async () => {
 		mockedDiscover
 			.mockResolvedValueOnce([])
 			.mockImplementationOnce(async (options: DiscoverOptions) => {
-				options?.onFallback?.({ reason: "missing-api-key", message: "missing key; using fallback models" });
+				options?.onFallback?.({
+					reason: "missing-api-key",
+					message: "missing key; using fallback models",
+				});
 				return [];
 			});
 		const pi = createExtensionPi();
@@ -415,7 +527,9 @@ describe("extension registration and discovery", () => {
 				message:
 					"Cursor model discovery needs an API key from /login (Use an API key -> Cursor), CURSOR_API_KEY, or --api-key with a Cursor SDK API key; Cursor Agent CLI/Desktop login is not reused. Using fallback Cursor models so /login and model selection still work; fallback models can run once auth exists. After adding auth to an already-started pi session, run /cursor-refresh-models to refresh the full live Cursor model catalog without restarting pi.",
 			});
-			return [makeProviderModelConfig("composer-2", { name: "Cursor Composer 2" })];
+			return [
+				makeProviderModelConfig("composer-2", { name: "Cursor Composer 2" }),
+			];
 		});
 
 		const pi = createExtensionPi();
@@ -439,7 +553,8 @@ describe("extension registration and discovery", () => {
 		mockedDiscover.mockImplementationOnce(async (options: DiscoverOptions) => {
 			options?.onFallback?.({
 				reason: "empty-model-list",
-				message: "Cursor model discovery returned no models; using fallback Cursor model list.",
+				message:
+					"Cursor model discovery returned no models; using fallback Cursor model list.",
 			});
 			return [];
 		});
@@ -450,7 +565,11 @@ describe("extension registration and discovery", () => {
 		const notify = vi.fn();
 		await pi.runSessionStart({
 			hasUI: true,
-			model: makeHarnessModel("anthropic", "anthropic-messages", "claude-sonnet-4-5"),
+			model: makeHarnessModel(
+				"anthropic",
+				"anthropic-messages",
+				"claude-sonnet-4-5",
+			),
 			ui: { notify, setStatus: vi.fn() },
 			sessionManager: { getBranch: vi.fn(() => []) },
 		});
@@ -464,7 +583,9 @@ describe("extension registration and discovery", () => {
 				reason: "missing-api-key",
 				message: "missing key; using fallback models",
 			});
-			return [makeProviderModelConfig("composer-2", { name: "Cursor Composer 2" })];
+			return [
+				makeProviderModelConfig("composer-2", { name: "Cursor Composer 2" }),
+			];
 		});
 
 		const pi = createExtensionPi();
@@ -473,18 +594,28 @@ describe("extension registration and discovery", () => {
 		const notify = vi.fn();
 		await pi.runSessionStart({
 			hasUI: true,
-			model: makeHarnessModel("anthropic", "anthropic-messages", "claude-sonnet-4-5"),
+			model: makeHarnessModel(
+				"anthropic",
+				"anthropic-messages",
+				"claude-sonnet-4-5",
+			),
 			ui: { notify, setStatus: vi.fn() },
 			sessionManager: { getBranch: vi.fn(() => []) },
 		});
 		expect(notify).not.toHaveBeenCalled();
 
-		await pi.runModelSelect(makeHarnessModel("cursor", "cursor-sdk", "composer-2"), {
-			hasUI: true,
-			ui: { notify, setStatus: vi.fn() },
-		});
+		await pi.runModelSelect(
+			makeHarnessModel("cursor", "cursor-sdk", "composer-2"),
+			{
+				hasUI: true,
+				ui: { notify, setStatus: vi.fn() },
+			},
+		);
 
-		expect(notify).toHaveBeenCalledWith("missing key; using fallback models", "warning");
+		expect(notify).toHaveBeenCalledWith(
+			"missing key; using fallback models",
+			"warning",
+		);
 	});
 
 	it("notifies fallback discovery issues once per Cursor session scope", async () => {
@@ -493,7 +624,9 @@ describe("extension registration and discovery", () => {
 				reason: "missing-api-key",
 				message: "missing key; using fallback models",
 			});
-			return [makeProviderModelConfig("composer-2", { name: "Cursor Composer 2" })];
+			return [
+				makeProviderModelConfig("composer-2", { name: "Cursor Composer 2" }),
+			];
 		});
 
 		const pi = createExtensionPi();
@@ -505,31 +638,49 @@ describe("extension registration and discovery", () => {
 			hasUI: true,
 			model: cursorModel,
 			ui: { notify, setStatus: vi.fn() },
-			sessionManager: { getSessionFile: vi.fn(() => "/tmp/session-one.jsonl"), getBranch: vi.fn(() => []) },
+			sessionManager: {
+				getSessionFile: vi.fn(() => "/tmp/session-one.jsonl"),
+				getBranch: vi.fn(() => []),
+			},
 		});
 		await pi.runTurnStart({
 			hasUI: true,
 			model: cursorModel,
 			ui: { notify, setStatus: vi.fn() },
-			sessionManager: { getSessionFile: vi.fn(() => "/tmp/session-one.jsonl"), getBranch: vi.fn(() => []) },
+			sessionManager: {
+				getSessionFile: vi.fn(() => "/tmp/session-one.jsonl"),
+				getBranch: vi.fn(() => []),
+			},
 		});
 		await pi.runSessionStart({
 			hasUI: true,
 			model: cursorModel,
 			ui: { notify, setStatus: vi.fn() },
-			sessionManager: { getSessionFile: vi.fn(() => "/tmp/session-two.jsonl"), getBranch: vi.fn(() => []) },
+			sessionManager: {
+				getSessionFile: vi.fn(() => "/tmp/session-two.jsonl"),
+				getBranch: vi.fn(() => []),
+			},
 		});
 
 		expect(notify).toHaveBeenCalledTimes(2);
-		expect(notify).toHaveBeenNthCalledWith(1, "missing key; using fallback models", "warning");
-		expect(notify).toHaveBeenNthCalledWith(2, "missing key; using fallback models", "warning");
+		expect(notify).toHaveBeenNthCalledWith(
+			1,
+			"missing key; using fallback models",
+			"warning",
+		);
+		expect(notify).toHaveBeenNthCalledWith(
+			2,
+			"missing key; using fallback models",
+			"warning",
+		);
 	});
 
 	it("does not notify fallback discovery issues without UI", async () => {
 		mockedDiscover.mockImplementationOnce(async (options: DiscoverOptions) => {
 			options?.onFallback?.({
 				reason: "empty-model-list",
-				message: "Cursor model discovery returned no models; using fallback Cursor model list.",
+				message:
+					"Cursor model discovery returned no models; using fallback Cursor model list.",
 			});
 			return [];
 		});
