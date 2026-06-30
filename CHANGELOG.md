@@ -4,7 +4,7 @@
 
 ### Added
 
-- Add `PI_CURSOR_HTTP_1.1=true` and `/cursor-http [on|off|toggle]` support to configure Cursor SDK local agents for HTTP/1.1/SSE backend streams before agent creation, with the effective transport included in the pooled session-agent key.
+- Add `PI_CURSOR_HTTP_1_1=true` and `/cursor-http [on|off|toggle]` support to configure Cursor SDK local agents for HTTP/1.1/SSE backend streams before agent creation, with the effective transport included in the pooled session-agent key.
 
 ## 0.1.55 - 2026-07-02
 

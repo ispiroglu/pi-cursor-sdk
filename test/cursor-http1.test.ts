@@ -11,7 +11,7 @@ describe("cursor HTTP/1.1 env support", () => {
 	beforeEach(() => {
 		setStoredCursorHttp1Enabled(undefined);
 	});
-	it("resolves PI_CURSOR_HTTP_1.1 using the shared env boolean convention", () => {
+	it("resolves PI_CURSOR_HTTP_1_1 using the shared env boolean convention", () => {
 		expect(resolveCursorHttp1Enabled({})).toBe(false);
 		expect(resolveCursorHttp1Enabled({ [CURSOR_HTTP1_ENV]: "true" })).toBe(
 			true,

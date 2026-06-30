@@ -1,7 +1,7 @@
 import type { CursorSdkModule } from "./cursor-sdk-runtime.js";
 import { parseEnvBoolean } from "./cursor-env-boolean.js";
 
-export const CURSOR_HTTP1_ENV = "PI_CURSOR_HTTP_1.1";
+export const CURSOR_HTTP1_ENV = "PI_CURSOR_HTTP_1_1";
 export const CURSOR_HTTP1_ENTRY_TYPE = "cursor-http1-state";
 
 type EnvRecord = Record<string, string | undefined>;
@@ -10,6 +10,7 @@ export interface CursorHttp1EntryData {
 	enabled: boolean;
 }
 
+let globalCursorHttp1Enabled: boolean | undefined;
 let sessionCursorHttp1Enabled: boolean | undefined;
 
 function getRuntimeEnv(): EnvRecord {
@@ -22,6 +23,16 @@ export function isCursorHttp1EntryData(
 	return (
 		typeof (value as CursorHttp1EntryData | undefined)?.enabled === "boolean"
 	);
+}
+
+export function getGlobalCursorHttp1Enabled(): boolean | undefined {
+	return globalCursorHttp1Enabled;
+}
+
+export function setGlobalCursorHttp1Enabled(
+	enabled: boolean | undefined,
+): void {
+	globalCursorHttp1Enabled = enabled;
 }
 
 export function getStoredCursorHttp1Enabled(): boolean | undefined {
@@ -43,7 +54,11 @@ export function resolveCursorHttp1EnvDefault(
 export function resolveCursorHttp1Enabled(
 	env: EnvRecord = getRuntimeEnv(),
 ): boolean {
-	return sessionCursorHttp1Enabled ?? resolveCursorHttp1EnvDefault(env);
+	return (
+		sessionCursorHttp1Enabled ??
+		globalCursorHttp1Enabled ??
+		resolveCursorHttp1EnvDefault(env)
+	);
 }
 
 export function configureCursorSdkHttp1(

@@ -1112,7 +1112,7 @@ describe("Cursor runtime state", () => {
 
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
 			expect.stringContaining(
-				"Cursor HTTP/1.1/SSE transport is enabled (PI_CURSOR_HTTP_1.1 env/default",
+				"Cursor HTTP/1.1/SSE transport is enabled (PI_CURSOR_HTTP_1_1 env/default",
 			),
 			"info",
 		);
@@ -1153,6 +1153,37 @@ describe("Cursor runtime state", () => {
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
 			"Cursor HTTP/1.1/SSE transport disabled",
 			"info",
+		);
+	});
+
+	it("persists /cursor-http preference to cursor-http.json and restores it as the global default", async () => {
+		const { pi, ctx, commandCtx, commands } = createCursorRuntimeHarness({
+			modelId: "gpt-5.5@1m",
+		});
+		await pi.invokeEventWithContext(
+			"session_start",
+			{ type: "session_start", reason: "startup" },
+			ctx,
+		);
+
+		await commands.get("cursor-http")!.handler("on", commandCtx);
+
+		expect(
+			JSON.parse(readFileSync(__testUtils.getHttpConfigPath(), "utf-8")),
+		).toEqual({ enabled: true });
+		__testUtils.resetCursorModeStateForTests();
+		const restored = createCursorRuntimeHarness({ modelId: "gpt-5.5@1m" });
+		await restored.pi.invokeEventWithContext(
+			"session_start",
+			{ type: "session_start", reason: "startup" },
+			restored.ctx,
+		);
+
+		expect(getStoredCursorHttp1Enabled()).toBeUndefined();
+		expect(resolveCursorHttp1Enabled()).toBe(true);
+		expect(restored.ctx.ui.setStatus).toHaveBeenLastCalledWith(
+			"cursor",
+			"cursor-fast:off · http1",
 		);
 	});
 
@@ -1222,7 +1253,7 @@ describe("Cursor runtime state", () => {
 				"info",
 			);
 			expect(ctx.ui.notify).toHaveBeenCalledWith(
-				expect.stringContaining("PI_CURSOR_HTTP_1.1: disabled"),
+				expect.stringContaining("PI_CURSOR_HTTP_1_1: disabled"),
 				"info",
 			);
 			expect(ctx.ui.notify).toHaveBeenCalledWith(
@@ -1266,7 +1297,7 @@ describe("Cursor runtime state", () => {
 			PI_CURSOR_SETTING_SOURCES: "project",
 		});
 		expect(report).toContain("PI_CURSOR_PI_TOOL_BRIDGE: disabled");
-		expect(report).toContain("PI_CURSOR_HTTP_1.1: disabled");
+		expect(report).toContain("PI_CURSOR_HTTP_1_1: disabled");
 		expect(report).toContain(
 			"Pi bridge: disabled (PI_CURSOR_PI_TOOL_BRIDGE=0).",
 		);

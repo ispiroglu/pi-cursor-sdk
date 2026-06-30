@@ -9,10 +9,12 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import {
 	CURSOR_HTTP1_ENTRY_TYPE,
 	CURSOR_HTTP1_ENV,
+	getGlobalCursorHttp1Enabled,
 	getStoredCursorHttp1Enabled,
 	isCursorHttp1EntryData,
 	resolveCursorHttp1Enabled,
 	resolveCursorHttp1EnvDefault,
+	setGlobalCursorHttp1Enabled,
 	setStoredCursorHttp1Enabled,
 	type CursorHttp1EntryData,
 } from "./cursor-http1.js";
@@ -40,6 +42,7 @@ import { getCursorModelMetadata } from "./model-discovery.js";
 const FAST_ENTRY_TYPE = "cursor-fast-state";
 const MODE_ENTRY_TYPE = "cursor-mode-state";
 const GLOBAL_CONFIG_FILE = "cursor-sdk.json";
+const HTTP_CONFIG_FILE = "cursor-http.json";
 
 export type CursorAgentMode = AgentModeOption;
 
@@ -57,6 +60,10 @@ interface CursorModeEntryData {
 
 interface CursorGlobalConfig {
 	fastDefaults?: Record<string, boolean>;
+}
+
+interface CursorHttpConfig {
+	enabled?: boolean;
 }
 
 type CursorRuntimeControlsExtensionApi = Pick<
@@ -135,6 +142,10 @@ function getConfigPath(): string {
 	return join(getAgentDir(), GLOBAL_CONFIG_FILE);
 }
 
+function getHttpConfigPath(): string {
+	return join(getAgentDir(), HTTP_CONFIG_FILE);
+}
+
 function loadGlobalFastPreferences(): Map<string, boolean> {
 	const path = getConfigPath();
 	if (!existsSync(path)) return new Map();
@@ -158,6 +169,24 @@ function saveGlobalFastPreferences(): void {
 			),
 		),
 	};
+	writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+}
+
+function loadGlobalCursorHttp1Enabled(): boolean | undefined {
+	const path = getHttpConfigPath();
+	if (!existsSync(path)) return undefined;
+	try {
+		const record = asRecord(JSON.parse(readFileSync(path, "utf-8")));
+		return typeof record?.enabled === "boolean" ? record.enabled : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function saveGlobalCursorHttp1Enabled(enabled: boolean): void {
+	const path = getHttpConfigPath();
+	mkdirSync(dirname(path), { recursive: true });
+	const config: CursorHttpConfig = { enabled };
 	writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
 }
 
@@ -364,12 +393,25 @@ function persistCursorHttp1Preference(
 	pi: Pick<ExtensionAPI, "appendEntry">,
 	enabled: boolean,
 ): void {
-	const previous = getStoredCursorHttp1Enabled();
+	const previousSession = getStoredCursorHttp1Enabled();
+	const previousGlobal = getGlobalCursorHttp1Enabled();
+	let savedGlobal = false;
 	setStoredCursorHttp1Enabled(enabled);
+	setGlobalCursorHttp1Enabled(enabled);
 	try {
+		saveGlobalCursorHttp1Enabled(enabled);
+		savedGlobal = true;
 		pi.appendEntry<CursorHttp1EntryData>(CURSOR_HTTP1_ENTRY_TYPE, { enabled });
 	} catch (error) {
-		setStoredCursorHttp1Enabled(previous);
+		setStoredCursorHttp1Enabled(previousSession);
+		setGlobalCursorHttp1Enabled(previousGlobal);
+		if (savedGlobal && previousGlobal !== undefined) {
+			try {
+				saveGlobalCursorHttp1Enabled(previousGlobal);
+			} catch {
+				// Preserve the original append failure reported to the user.
+			}
+		}
 		throw error;
 	}
 }
@@ -547,8 +589,13 @@ export function registerCursorRuntimeControls(
 				const effective = resolveCursorHttp1Enabled();
 				const stored = getStoredCursorHttp1Enabled();
 				const envDefault = resolveCursorHttp1EnvDefault();
+				const global = getGlobalCursorHttp1Enabled();
 				const source =
-					stored === undefined ? `${CURSOR_HTTP1_ENV} env/default` : "session";
+					stored !== undefined
+						? "session"
+						: global !== undefined
+							? "global config"
+							: `${CURSOR_HTTP1_ENV} env/default`;
 				ctx.ui.notify(
 					`Cursor HTTP/1.1/SSE transport is ${effective ? "enabled" : "disabled"} (${source}; env default ${envDefault ? "enabled" : "disabled"}). ${usage}`,
 					"info",
@@ -655,6 +702,7 @@ export function registerCursorRuntimeControls(
 	registerCursorModelLifecycle(pi, {
 		sessionStart: (_event, ctx) => {
 			globalFastPreferences = loadGlobalFastPreferences();
+			setGlobalCursorHttp1Enabled(loadGlobalCursorHttp1Enabled());
 			cliForceFast = pi.getFlag("cursor-fast") === true;
 			cliForceNoFast = pi.getFlag("cursor-no-fast") === true;
 			restoreSessionFastPreferences(ctx);
@@ -671,6 +719,7 @@ export function registerCursorRuntimeControls(
 
 function resetCursorModeStateForTests(): void {
 	sessionCursorAgentMode = undefined;
+	setGlobalCursorHttp1Enabled(undefined);
 	setStoredCursorHttp1Enabled(undefined);
 	cliCursorModeState = { kind: "unset" };
 	invalidCursorModeNotifiedSessionScopeKeys.clear();
@@ -682,7 +731,9 @@ export const __testUtils = {
 	CURSOR_HTTP1_ENTRY_TYPE,
 	DEFAULT_CURSOR_AGENT_MODE,
 	getConfigPath,
+	getHttpConfigPath,
 	loadGlobalFastPreferences,
+	loadGlobalCursorHttp1Enabled,
 	sessionFastPreferences,
 	getSessionCursorAgentMode: () => sessionCursorAgentMode,
 	getCliCursorAgentMode: () =>
