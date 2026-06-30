@@ -1,6 +1,10 @@
 import type { SimpleStreamOptions } from "@earendil-works/pi-ai/compat";
+import { configureCursorSdkHttp1 } from "./cursor-http1.js";
 import { installCursorMcpToolTimeoutOverride } from "./cursor-mcp-timeout-override.js";
-import { installCursorSdkOutputFilter, suppressCursorSdkOutput } from "./cursor-sdk-output-filter.js";
+import {
+	installCursorSdkOutputFilter,
+	suppressCursorSdkOutput,
+} from "./cursor-sdk-output-filter.js";
 import {
 	acquireSessionCursorAgent,
 	buildCursorSessionSendPrompt,
@@ -17,7 +21,10 @@ import {
 	createCursorNativeReplayId,
 	cursorLiveRuns,
 } from "./cursor-provider-live-run-drain.js";
-import { getCursorProviderAgentModeOrThrow, getEffectiveFastForModelId } from "./cursor-state.js";
+import {
+	getCursorProviderAgentModeOrThrow,
+	getEffectiveFastForModelId,
+} from "./cursor-state.js";
 import { buildCursorModelSelection } from "./model-discovery.js";
 import { getEffectiveCursorSettingSources } from "./cursor-setting-sources.js";
 import { resolveCursorPiToolBridgeEnabled } from "./cursor-pi-tool-bridge-env.js";
@@ -47,7 +54,8 @@ export interface PrepareCursorProviderTurnParams {
 export async function prepareCursorProviderTurn(
 	prepareParams: PrepareCursorProviderTurnParams,
 ): Promise<CursorProviderTurnPrepareResult> {
-	const { params, cwd, resolvedApiKey, sdkEventDebug, throwIfAborted } = prepareParams;
+	const { params, cwd, resolvedApiKey, sdkEventDebug, throwIfAborted } =
+		prepareParams;
 	const { model, context, options } = params;
 
 	let restoreCursorSdkOutputFilter: (() => void) | undefined;
@@ -58,9 +66,15 @@ export async function prepareCursorProviderTurn(
 	try {
 		const fastEnabled = getEffectiveFastForModelId(model.id);
 		const agentMode = getCursorProviderAgentModeOrThrow();
-		const selection = buildCursorModelSelection(model.id, options?.reasoning ?? "off", fastEnabled);
+		const selection = buildCursorModelSelection(
+			model.id,
+			options?.reasoning ?? "off",
+			fastEnabled,
+		);
 		const settingSources = getEffectiveCursorSettingSources();
-		const { Agent } = await loadCursorSdk();
+		const sdk = await loadCursorSdk();
+		const { Agent } = sdk;
+		const cursorHttp1Enabled = configureCursorSdkHttp1(sdk);
 
 		installCursorMcpToolTimeoutOverride();
 		restoreCursorSdkOutputFilter = installCursorSdkOutputFilter();
@@ -73,10 +87,14 @@ export async function prepareCursorProviderTurn(
 			cwd,
 			modelSelection: selection,
 			settingSources,
+			useHttp1ForAgent: cursorHttp1Enabled,
 			debugRecorder: sdkEventDebug,
 			onBridgeToolRequest: (request: CursorPiBridgeToolRequest) => {
 				if (liveRunForBridgeQueue && !liveRunForBridgeQueue.disposed) {
-					cursorLiveRuns.queueEvent(liveRunForBridgeQueue, { type: "bridge-tool", request });
+					cursorLiveRuns.queueEvent(liveRunForBridgeQueue, {
+						type: "bridge-tool",
+						request,
+					});
 				} else {
 					queuedBridgeRequestsBeforeLiveRun.push(request);
 				}
@@ -84,18 +102,28 @@ export async function prepareCursorProviderTurn(
 			createAgent: (createOptions: Parameters<typeof Agent.create>[0]) =>
 				suppressCursorSdkOutput(() => Agent.create(createOptions)),
 		};
-		let sessionAgentLease = await acquireSessionCursorAgent(sessionAgentAcquireParams);
+		let sessionAgentLease = await acquireSessionCursorAgent(
+			sessionAgentAcquireParams,
+		);
 		sessionAgentScopeKey = sessionAgentLease.scopeKey;
 		throwIfAborted();
 
-		let bridgeToolNames = new Set(sessionAgentLease.bridgeRun?.snapshot.tools.map((tool) => tool.mcpToolName) ?? []);
+		let bridgeToolNames = new Set(
+			sessionAgentLease.bridgeRun?.snapshot.tools.map(
+				(tool) => tool.mcpToolName,
+			) ?? [],
+		);
 		let includePiBridgeGuidance = bridgeToolNames.size > 0;
-		const buildPromptOptions = (plan: ReturnType<typeof planCursorSessionSend>) => {
+		const buildPromptOptions = (
+			plan: ReturnType<typeof planCursorSessionSend>,
+		) => {
 			const promptOptions = {
 				...getCursorPromptOptions(model),
 				agentMode,
 				includePiBridgeGuidance,
-				includePiAskQuestionGuidance: bridgeToolNames.has("pi__cursor_ask_question"),
+				includePiAskQuestionGuidance: bridgeToolNames.has(
+					"pi__cursor_ask_question",
+				),
 			};
 			if (plan.mode !== "bootstrap" || !resolveCursorToolManifestEnabled()) {
 				return promptOptions;
@@ -114,9 +142,15 @@ export async function prepareCursorProviderTurn(
 		let prompt = buildCursorSessionSendPrompt(context, promptOptions, sendPlan);
 		if (sendPlan.resetAgent) {
 			await resetSessionCursorAgent(sessionAgentScopeKey);
-			sessionAgentLease = await acquireSessionCursorAgent(sessionAgentAcquireParams);
+			sessionAgentLease = await acquireSessionCursorAgent(
+				sessionAgentAcquireParams,
+			);
 			sessionAgentScopeKey = sessionAgentLease.scopeKey;
-			bridgeToolNames = new Set(sessionAgentLease.bridgeRun?.snapshot.tools.map((tool) => tool.mcpToolName) ?? []);
+			bridgeToolNames = new Set(
+				sessionAgentLease.bridgeRun?.snapshot.tools.map(
+					(tool) => tool.mcpToolName,
+				) ?? [],
+			);
 			includePiBridgeGuidance = bridgeToolNames.size > 0;
 			sendPlan = planCursorSessionSend(sessionAgentLease.sendState, context);
 			promptOptions = buildPromptOptions(sendPlan);
@@ -143,6 +177,7 @@ export async function prepareCursorProviderTurn(
 				selection,
 			},
 			settingSources: settingSources ?? null,
+			cursorHttp1Enabled,
 			sendState: sessionAgentLease.sendState,
 			sendPlan,
 			promptOptions,
@@ -157,7 +192,9 @@ export async function prepareCursorProviderTurn(
 		const useLiveRun = useNativeToolReplay || bridgeRun !== undefined;
 		liveRun = useLiveRun
 			? cursorLiveRuns.start({
-					id: useNativeToolReplay ? nativeReplayId : bridgeRun?.id ?? nativeReplayId,
+					id: useNativeToolReplay
+						? nativeReplayId
+						: (bridgeRun?.id ?? nativeReplayId),
 					agent,
 					bridgeRun,
 					sessionBridgeRun,
@@ -215,7 +252,9 @@ export async function prepareCursorProviderTurn(
 			if (liveRun && !liveRun.disposed) {
 				await cursorLiveRuns
 					.release(liveRun)
-					.catch(() => abandonSessionCursorAgent(sessionAgentScopeKey).catch(() => {}));
+					.catch(() =>
+						abandonSessionCursorAgent(sessionAgentScopeKey).catch(() => {}),
+					);
 			} else {
 				await abandonSessionCursorAgent(sessionAgentScopeKey).catch(() => {});
 			}
@@ -224,7 +263,9 @@ export async function prepareCursorProviderTurn(
 	}
 }
 
-export function requireCursorApiKey(options: SimpleStreamOptions | undefined): string {
+export function requireCursorApiKey(
+	options: SimpleStreamOptions | undefined,
+): string {
 	const apiKey = resolveCursorApiKey(options?.apiKey);
 	if (!apiKey) throw new Error(MISSING_CURSOR_API_KEY_MESSAGE);
 	return apiKey;
