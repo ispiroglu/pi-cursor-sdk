@@ -1,14 +1,14 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat";
 import {
 	createExtensionCommandContext,
+	createExtensionRegistrationPi,
 	createExtensionTestContext,
 	makeAssistantMessage,
 	makeContext,
 	makeHarnessModel,
 	makeModel,
 	makeProviderModelConfig,
-	createExtensionRegistrationPi,
 } from "./helpers/pi-harness.js";
 import {
 	createExtensionPi,
@@ -27,11 +27,14 @@ vi.mock("../src/cursor-provider.js", () => ({
 
 import extensionFactory from "../src/index.js";
 import { discoverModels } from "../src/model-discovery.js";
+import { acquireSessionCursorAgent, __testUtils as sessionAgentTestUtils } from "../src/cursor-session-agent.js";
+import { __testUtils as cursorSessionScopeTestUtils } from "../src/cursor-session-scope.js";
 import { streamCursor } from "../src/cursor-provider.js";
 import { streamCursorLazy } from "../src/cursor-provider-lazy.js";
 import { buildCursorPiToolBridgeSnapshot } from "../src/cursor-pi-tool-bridge.js";
 import { CURSOR_ASK_QUESTION_TOOL_NAME } from "../src/cursor-question-tool.js";
 import { CURSOR_ACTIVATE_SKILL_TOOL_NAME } from "../src/cursor-skill-tool.js";
+import { __testUtils as cursorSdkProcessErrorGuardTestUtils } from "../src/cursor-sdk-process-error-guard.js";
 
 const mockedDiscover = vi.mocked(discoverModels);
 const mockedStreamCursor = vi.mocked(streamCursor);
@@ -40,6 +43,25 @@ type DiscoverOptions = Parameters<typeof discoverModels>[0];
 
 describe("extension registration and discovery", () => {
 	beforeEach(resetIndexExtensionTestState);
+
+	it("keeps one process error guard for the active session lifecycle", async () => {
+		mockedDiscover.mockResolvedValueOnce([]);
+		const pi = createExtensionPi();
+		const originalEmit = process.emit;
+		await extensionFactory(pi);
+
+		expect(cursorSdkProcessErrorGuardTestUtils.activeSessionCount()).toBe(0);
+		await pi.runSessionStart();
+		expect(cursorSdkProcessErrorGuardTestUtils.activeSessionCount()).toBe(1);
+		expect(process.emit).not.toBe(originalEmit);
+		await pi.runSessionStart({}, { reason: "reload" });
+		expect(cursorSdkProcessErrorGuardTestUtils.activeSessionCount()).toBe(1);
+		await pi.runSessionShutdown({ reason: "reload" });
+		expect(cursorSdkProcessErrorGuardTestUtils.activeSessionCount()).toBe(0);
+		expect(process.emit).toBe(originalEmit);
+		await pi.runSessionShutdown({ reason: "quit" });
+		expect(cursorSdkProcessErrorGuardTestUtils.activeSessionCount()).toBe(0);
+	});
 
 	it("registers Cursor runtime controls and one provider with correct fields", async () => {
 		const mockModels = [
@@ -64,6 +86,62 @@ describe("extension registration and discovery", () => {
 			"cursor-mode",
 			expect.objectContaining({ type: "string", default: "" }),
 		);
+		expect(pi.registerFlag).toHaveBeenCalledWith(
+			"cursor-runtime",
+			expect.objectContaining({ type: "string", default: "" }),
+		);
+		expect(pi.registerFlag).toHaveBeenCalledWith(
+			"cursor-cloud-repo",
+			expect.objectContaining({ type: "string", default: "" }),
+		);
+		expect(pi.registerFlag).toHaveBeenCalledWith(
+			"cursor-cloud-branch",
+			expect.objectContaining({ type: "string", default: "" }),
+		);
+		expect(pi.registerFlag).toHaveBeenCalledWith(
+			"cursor-cloud-context",
+			expect.objectContaining({ type: "string", default: "" }),
+		);
+		expect(pi.registerFlag).toHaveBeenCalledWith(
+			"cursor-cloud-direct-push",
+			expect.objectContaining({ type: "boolean", default: false }),
+		);
+		expect(pi.registerFlag).toHaveBeenCalledWith(
+			"cursor-cloud-allow-local-state",
+			expect.objectContaining({ type: "boolean", default: false }),
+		);
+		expect(pi.registerFlag).toHaveBeenCalledWith(
+			"cursor-cloud-env",
+			expect.objectContaining({ type: "string", default: "" }),
+		);
+		expect(pi.registerFlag).toHaveBeenCalledWith(
+			"cursor-cloud-env-from-files",
+			expect.objectContaining({ type: "boolean", default: false }),
+		);
+		expect(pi.registerFlag).toHaveBeenCalledWith(
+			"cursor-cloud-env-type",
+			expect.objectContaining({ type: "string", default: "" }),
+		);
+		expect(pi.registerFlag).toHaveBeenCalledWith(
+			"cursor-cloud-env-name",
+			expect.objectContaining({ type: "string", default: "" }),
+		);
+		expect(pi.registerFlag).toHaveBeenCalledWith(
+			"cursor-auto-review",
+			expect.objectContaining({ type: "boolean", default: false }),
+		);
+		expect(pi.registerFlag).toHaveBeenCalledWith(
+			"cursor-sandbox",
+			expect.objectContaining({ type: "boolean", default: false }),
+		);
+		expect(pi.registerFlag).toHaveBeenCalledWith(
+			"cursor-local-resume",
+			expect.objectContaining({ type: "boolean", default: false }),
+		);
+		expect(pi.registerFlag).toHaveBeenCalledWith(
+			"cursor-no-local-resume",
+			expect.objectContaining({ type: "boolean", default: false }),
+		);
 		expect(pi.registerCommand).toHaveBeenCalledWith(
 			"cursor-fast",
 			expect.objectContaining({
@@ -79,6 +157,10 @@ describe("extension registration and discovery", () => {
 			}),
 		);
 		expect(pi.registerCommand).toHaveBeenCalledWith(
+			"cursor-runtime",
+			expect.objectContaining({ description: expect.stringContaining("Set Cursor runtime") }),
+		);
+		expect(pi.registerCommand).toHaveBeenCalledWith(
 			"cursor-tools",
 			expect.objectContaining({
 				description: expect.stringContaining("Show live Cursor tool surfaces"),
@@ -91,12 +173,24 @@ describe("extension registration and discovery", () => {
 			}),
 		);
 		expect(pi.registerCommand).toHaveBeenCalledWith(
+			"cursor-cloud",
+			expect.objectContaining({ description: expect.stringContaining("recorded Cursor cloud agents") }),
+		);
+		expect(pi.registerCommand).toHaveBeenCalledWith(
+			"cursor-local-resume-cleanup",
+			expect.objectContaining({ description: expect.stringContaining("superseded local Cursor SDK agents") }),
+		);
+		expect(pi.registerCommand).toHaveBeenCalledWith(
 			"cursor-refresh-models",
 			expect.objectContaining({
 				description: expect.stringContaining(
 					"Refresh the live Cursor model catalog",
 				),
 			}),
+		);
+		expect(pi.registerCommand).toHaveBeenCalledWith(
+			"cursor-refresh-config",
+			expect.objectContaining({ description: expect.stringContaining("Refresh filesystem Cursor config") }),
 		);
 		expect(pi.registerTool).toHaveBeenCalledTimes(10);
 		expect(pi._tools.map((tool) => tool.name)).toEqual([
@@ -467,6 +561,7 @@ describe("extension registration and discovery", () => {
 		const pi = createExtensionPi();
 		await extensionFactory(pi);
 		const notify = vi.fn();
+		const getApiKeyForProvider = vi.fn().mockResolvedValue(" registry-key ");
 
 		await pi.runCommand(
 			"cursor-refresh-models",
@@ -474,10 +569,13 @@ describe("extension registration and discovery", () => {
 			createExtensionCommandContext({
 				hasUI: true,
 				model: undefined,
+				modelRegistry: { getApiKeyForProvider } as never,
 				ui: { notify },
 			}),
 		);
 
+		expect(getApiKeyForProvider).toHaveBeenCalledWith("cursor");
+		expect(mockedDiscover).toHaveBeenNthCalledWith(2, expect.objectContaining({ apiKey: "registry-key", forceRefresh: true }));
 		expect(mockedDiscover).toHaveBeenCalledTimes(2);
 		expect(pi.registerProvider).toHaveBeenCalledTimes(2);
 		expect(pi._registered[0].config.models).toBe(startupModels);
@@ -487,6 +585,59 @@ describe("extension registration and discovery", () => {
 			"Cursor model catalog refreshed with 1 model.",
 			"info",
 		);
+	});
+
+	it("refreshes the current Cursor SDK agent config through a command", async () => {
+		mockedDiscover.mockResolvedValueOnce([]);
+		const pi = createExtensionPi();
+		await extensionFactory(pi);
+		await pi.runSessionStart({ sessionManager: { getSessionFile: vi.fn(() => "/tmp/sessions/refresh-config.jsonl") } });
+		cursorSessionScopeTestUtils.set("/tmp/project", "/tmp/sessions/refresh-config.jsonl");
+		const reload = vi.fn().mockResolvedValue(undefined);
+		await acquireSessionCursorAgent({
+			apiKey: "test-key",
+			agentMode: "agent",
+			cwd: "/tmp/project",
+			modelSelection: { id: "composer-2.5" },
+			createAgent: vi.fn().mockResolvedValue({
+				agentId: "agent-refresh-config",
+				reload,
+				[Symbol.asyncDispose]: vi.fn().mockResolvedValue(undefined),
+			}),
+		});
+		const notify = vi.fn();
+
+		await pi.runCommand("cursor-refresh-config", "", createExtensionCommandContext({ model: makeModel("composer-2.5"), ui: { notify } }));
+
+		expect(reload).toHaveBeenCalledTimes(1);
+		expect(notify).toHaveBeenCalledWith("Cursor SDK agent config refreshed.", "info");
+		await sessionAgentTestUtils.disposeAllSessionCursorAgents();
+	});
+
+	it("handles cursor-refresh-config before an agent exists", async () => {
+		mockedDiscover.mockResolvedValueOnce([]);
+		const pi = createExtensionPi();
+		await extensionFactory(pi);
+		const notify = vi.fn();
+
+		await pi.runCommand("cursor-refresh-config", "", createExtensionCommandContext({ model: makeModel("composer-2.5"), ui: { notify } }));
+
+		expect(notify).toHaveBeenCalledWith("No Cursor SDK agent exists yet; config will load on the next Cursor run.", "warning");
+	});
+
+	it("handles cursor-refresh-config on non-Cursor models", async () => {
+		mockedDiscover.mockResolvedValueOnce([]);
+		const pi = createExtensionPi();
+		await extensionFactory(pi);
+		const notify = vi.fn();
+
+		await pi.runCommand(
+			"cursor-refresh-config",
+			"",
+			createExtensionCommandContext({ model: makeHarnessModel("openai", "openai-chat", "gpt-test"), ui: { notify } }),
+		);
+
+		expect(notify).toHaveBeenCalledWith("Cursor config refresh is available only for Cursor models.", "info");
 	});
 
 	it("warns when live Cursor model refresh does not use a live catalog", async () => {
@@ -525,7 +676,7 @@ describe("extension registration and discovery", () => {
 			options?.onFallback?.({
 				reason: "missing-api-key",
 				message:
-					"Cursor model discovery needs an API key from /login (Use an API key -> Cursor), CURSOR_API_KEY, or --api-key with a Cursor SDK API key; Cursor Agent CLI/Desktop login is not reused. Using fallback Cursor models so /login and model selection still work; fallback models can run once auth exists. After adding auth to an already-started pi session, run /cursor-refresh-models to refresh the full live Cursor model catalog without restarting pi.",
+					"Cursor model discovery needs an API key from /login (Use an API key -> Cursor) or CURSOR_API_KEY; startup discovery does not parse Pi CLI arguments, and Cursor Agent CLI/Desktop login is not reused. Using fallback Cursor models so /login and model selection still work; fallback models can run once auth exists. After adding auth to an already-started pi session, run /cursor-refresh-models to refresh the full live Cursor model catalog without restarting pi.",
 			});
 			return [
 				makeProviderModelConfig("composer-2", { name: "Cursor Composer 2" }),
@@ -544,7 +695,7 @@ describe("extension registration and discovery", () => {
 		});
 
 		expect(notify).toHaveBeenCalledWith(
-			"Cursor model discovery needs an API key from /login (Use an API key -> Cursor), CURSOR_API_KEY, or --api-key with a Cursor SDK API key; Cursor Agent CLI/Desktop login is not reused. Using fallback Cursor models so /login and model selection still work; fallback models can run once auth exists. After adding auth to an already-started pi session, run /cursor-refresh-models to refresh the full live Cursor model catalog without restarting pi.",
+			"Cursor model discovery needs an API key from /login (Use an API key -> Cursor) or CURSOR_API_KEY; startup discovery does not parse Pi CLI arguments, and Cursor Agent CLI/Desktop login is not reused. Using fallback Cursor models so /login and model selection still work; fallback models can run once auth exists. After adding auth to an already-started pi session, run /cursor-refresh-models to refresh the full live Cursor model catalog without restarting pi.",
 			"warning",
 		);
 	});

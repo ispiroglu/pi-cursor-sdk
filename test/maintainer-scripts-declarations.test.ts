@@ -28,6 +28,7 @@ import {
 	parseDebugSdkEventsArgs,
 	type CursorSdkEventJsonlSink,
 } from "../scripts/debug-sdk-events.mjs";
+import type { buildCloudSmokeEnv as cloudSmokeEnvDeclaration } from "../scripts/cloud-runtime-smoke.d.mts";
 import {
 	commonBooleanFlag,
 	commonProbeFlags,
@@ -48,6 +49,7 @@ import {
 	sealedNodePath,
 } from "../scripts/lib/cursor-smoke-env.mjs";
 import {
+	CHILD_PROCESS_TREE_SPAWN_OPTIONS,
 	DEFAULT_CHILD_SHUTDOWN_GRACE_MS,
 	parseJsonLines,
 	signalChild,
@@ -205,6 +207,7 @@ const _backfillPiSessionSnapshot: (
 const _sdkArgsHelp: boolean = parseDebugSdkEventsArgs(["--prompt", "hello"], { CURSOR_API_KEY: "key" }).help;
 const _providerArgsHelp: boolean = parseDebugProviderEventsArgs(["--prompt", "hello"], { CURSOR_API_KEY: "key" }).help;
 const _childShutdownGraceMs: number = DEFAULT_CHILD_SHUTDOWN_GRACE_MS;
+const _childProcessTreeSpawnOptions: Readonly<{ detached: boolean }> = CHILD_PROCESS_TREE_SPAWN_OPTIONS;
 const _startupNoisePatternValue: readonly string[] = CURSOR_SDK_STARTUP_NOISE_PATTERNS;
 const _timingSnapshot = createTimingTracker().snapshot();
 const _eventJsonlSinkFactory: (artifactDir: string, startedAt: number) => CursorSdkEventJsonlSink = createEventJsonlSink;
@@ -235,6 +238,8 @@ const _readArgvValue: string = readArgvValue(["--model", "cursor"], 1, "--model"
 const _parsedArgv: Record<string, unknown> = parseArgv([], { defaults: {}, flags: {}, fail: createScriptFail("test") });
 const _sealedNodePath: string = sealedNodePath("/usr/local/bin/node", "/tmp/bin");
 const _smokeEnv: Record<string, string | undefined> = buildCursorSmokeEnv({ settingSources: "none", nativeToolDisplay: true });
+const _cloudSmokeEnvReturn: AssertEqual<ReturnType<typeof cloudSmokeEnvDeclaration>, NodeJS.ProcessEnv> = true;
+const _cloudSmokeEnvContextArg: AssertEqual<Parameters<typeof cloudSmokeEnvDeclaration>[1], { contextHandoff?: "fresh" | "bootstrap" | "never" } | undefined> = true;
 const _smokeEnvPlan: { envEntries: Array<[string, string]> } = buildCursorSmokeEnvPlan({ settingSources: "none" });
 const _terminalHtml: string = buildTerminalHtml({
 	ansi: "ok",
@@ -334,6 +339,7 @@ void [
 	_sdkArgsHelp,
 	_providerArgsHelp,
 	_childShutdownGraceMs,
+	_childProcessTreeSpawnOptions,
 	_startupNoisePatternValue,
 	_timingSnapshot,
 	_eventJsonlSinkFactory,
@@ -342,6 +348,8 @@ void [
 	_isOutputSuppressed,
 	_isStartupNoise,
 	_parsedJsonLines,
+	_cloudSmokeEnvReturn,
+	_cloudSmokeEnvContextArg,
 	_failFactory,
 	_scrubbedFromShared,
 	_scrubbedFromScriptLib,

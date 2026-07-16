@@ -1,5 +1,5 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
-import { abandonSessionCursorAgent, cursorLiveRuns } from "./cursor-provider-live-run-drain.js";
+import { cursorLiveRuns } from "./cursor-provider-live-run-drain.js";
 import {
 	classifyCursorRunEmission,
 	getCursorRunAbortMessage,
@@ -23,27 +23,32 @@ import type {
 	CursorProviderTurnRunnerParams,
 	CursorProviderTurnSend,
 	CursorProviderTurnSendResult,
+	LiveCursorProviderTurnRuntime,
+	LocalCursorProviderTurnPrepareResult,
 } from "./cursor-provider-turn-types.js";
 import { applyCursorUsage } from "./cursor-usage-accounting.js";
 import { hasUsableText } from "./cursor-record-utils.js";
+import { emitDisplayOnlyTraceBlock } from "./cursor-display-only-trace.js";
 export type CursorTurnTerminalEvent =
 	| {
 			kind: "direct";
 			prepared: CursorProviderTurnPrepareResult;
 			outcome: CursorRunOutcome;
+			displayOnlyTraceBlock?: string;
 	  }
 	| { kind: "error"; prepared: CursorProviderTurnPrepareResult | undefined; error: unknown };
 
 function applyLiveRunOutcome(
 	outcome: CursorRunOutcome,
-	prepared: CursorProviderTurnPrepareResult,
+	prepared: LocalCursorProviderTurnPrepareResult & { runtime: LiveCursorProviderTurnRuntime },
 	context: CursorProviderTurnRunnerParams["context"],
 ): void {
-	if (prepared.runtime.kind !== "live" || prepared.runtime.liveRun.disposed) return;
+	if (prepared.runtime.liveRun.disposed) return;
 	const { liveRun } = prepared.runtime;
 	switch (classifyCursorRunEmission(outcome)) {
 		case "finished":
-			prepared.sessionAgentLease.commitSend(context, prepared.meta.bootstrap);
+			prepared.lifecycle.commitSend(context, prepared.meta.bootstrap);
+			if (prepared.meta.resumeNotice) liveRun.resumeNotice = prepared.meta.resumeNotice;
 			cursorLiveRuns.markFinished(liveRun, outcome.kind === "finished" ? outcome.finalText : "");
 			break;
 		case "cancelled":
@@ -69,7 +74,7 @@ export interface CursorRunFinalizerParams {
 
 export interface StartCursorLiveRunCompletionParams {
 	send: CursorProviderTurnSend;
-	prepared: CursorProviderTurnPrepareResult;
+	prepared: LocalCursorProviderTurnPrepareResult & { runtime: LiveCursorProviderTurnRuntime };
 	modelId: string;
 	discardIncompleteTools: (outcome: IncompleteCursorToolRunOutcomeInput) => void;
 }
@@ -84,7 +89,6 @@ export class CursorRunFinalizer {
 		const sdkEventDebug = this.params.sdkEventDebug();
 		const { send, prepared, modelId, discardIncompleteTools } = startParams;
 		const { run, cursorAgentMessageOffset } = send;
-		if (prepared.runtime.kind !== "live") throw new Error("startLiveRunCompletion requires a live run");
 		const { liveRun } = prepared.runtime;
 		const waitCompletion = awaitFinalizeCursorRunOutcome({
 			run,
@@ -93,36 +97,37 @@ export class CursorRunFinalizer {
 			modelId,
 			signal: runnerParams.options?.signal,
 			runResultFallback: run.result,
+			runErrorFallback: run.error,
 			resolvedApiKey: this.params.resolvedApiKey(),
 			optionsApiKey: runnerParams.options?.apiKey,
 			sdkEventDebug,
 			cacheContextWindow: true,
 			contextWindowAgentId: liveRun.agent.agentId,
 		})
-			.then(async (outcome) => {
-				applyLiveRunOutcome(outcome, prepared, runnerParams.context);
+			.then(async (finalized) => {
+				applyLiveRunOutcome(finalized.outcome, prepared, runnerParams.context);
 			})
-			.catch(async (error: unknown) => {
-				sdkEventDebug?.recordWaitResult({ status: "error", error: String(error) });
-				sdkEventDebug?.recordError("run_wait", error);
-				discardIncompleteTools({ status: "error" });
-				await sdkEventDebug?.captureRunArtifacts(run);
-				if (liveRun.disposed) return;
-				cursorLiveRuns.markError(
-					liveRun,
-					sanitizeCursorProviderError(error, this.params.resolvedApiKey() ?? runnerParams.options?.apiKey),
-				);
+			.catch((error: unknown) => {
+				this.safeCleanup(() => discardIncompleteTools({ status: "error" }));
+				if (!liveRun.disposed) {
+					cursorLiveRuns.markError(
+						liveRun,
+						sanitizeCursorProviderError(error, this.params.resolvedApiKey() ?? runnerParams.options?.apiKey),
+					);
+				}
+				this.safeCleanup(() => sdkEventDebug?.recordWaitResult({ status: "error", error: String(error) }));
+				this.safeCleanup(() => sdkEventDebug?.recordError("run_wait", error));
 			});
-		// Mark the pooled agent busy as soon as the SDK run exists so auto-compaction summarization
+		// Mark the pooled local agent busy as soon as the SDK run exists so auto-compaction summarization
 		// (and other concurrent acquires) wait for run.wait() instead of hitting AgentBusyError.
-		prepared.sessionAgentLease.trackRunCompletion(waitCompletion);
+		prepared.lifecycle.trackRunCompletion(waitCompletion);
 		return { waitCompletion, prepared };
 	}
 
 	async applyTerminalEvent(event: CursorTurnTerminalEvent): Promise<void> {
 		if (this.terminalApplied) return;
 		if (event.kind === "direct") {
-			await this.applyDirectOutcome(event.prepared, event.outcome);
+			await this.applyDirectOutcome(event.prepared, event.outcome, event.displayOnlyTraceBlock);
 			this.terminalApplied = true;
 			return;
 		}
@@ -150,6 +155,7 @@ export class CursorRunFinalizer {
 				.catch(() => {});
 			return;
 		}
+		await prepared?.lifecycle.dispose().catch(() => {});
 		await this.finalizeSdkEventDebugBestEffort();
 		this.safeCleanup(() => this.params.sdkProcessErrorGuard.dispose());
 	}
@@ -157,45 +163,48 @@ export class CursorRunFinalizer {
 	private async applyDirectOutcome(
 		prepared: CursorProviderTurnPrepareResult,
 		outcome: CursorRunOutcome,
+		displayOnlyTraceBlock: string | undefined,
 	): Promise<void> {
 		const { stream, partial, model, context } = this.params.runnerParams;
 		prepared.runtime.turnCoordinator.closeTraceBlock();
 		switch (classifyCursorRunEmission(outcome)) {
 			case "cancelled":
-				await abandonSessionCursorAgent(prepared.sessionAgentScopeKey);
+				await prepared.lifecycle.abandon();
 				this.pushTerminalError(partial, "aborted", getCursorRunAbortMessage(outcome));
 				break;
 			case "failed":
-				await abandonSessionCursorAgent(prepared.sessionAgentScopeKey);
+				await prepared.lifecycle.abandon();
 				this.pushTerminalError(partial, "error", outcome.kind === "error" ? outcome.errorMessage : "Cursor SDK run failed.");
 				break;
 			case "finished":
-				prepared.sessionAgentLease.commitSend(context, prepared.meta.bootstrap);
+				prepared.lifecycle.commitSend(context, prepared.meta.bootstrap);
 				prepared.runtime.turnCoordinator.flushText(
 					outcome.kind === "finished" && hasUsableText(outcome.finalText) ? [outcome.finalText] : [],
 				);
 				applyCursorUsage(partial, model, context, prepared.meta.promptInputTokens, {
 					turn: prepared.runtime.turnCoordinator.lastSdkTurnUsage,
 				});
+				if (prepared.meta.resumeNotice) emitDisplayOnlyTraceBlock(stream, partial, prepared.meta.resumeNotice);
+				if (displayOnlyTraceBlock) emitDisplayOnlyTraceBlock(stream, partial, displayOnlyTraceBlock);
 				stream.push({ type: "done", reason: "stop", message: partial });
 				break;
 		}
 	}
 
 	private async applyErrorOutcome(prepared: CursorProviderTurnPrepareResult | undefined, error: unknown): Promise<void> {
-		this.params.sdkEventDebug()?.recordError("provider_stream", error);
-		prepared?.runtime.turnCoordinator.discardIncompleteStartedToolCalls(
+		this.safeCleanup(() => prepared?.runtime.turnCoordinator.discardIncompleteStartedToolCalls(
 			buildIncompleteCursorToolRunOutcome({
 				status: error instanceof CursorLiveRunAbortError ? "cancelled" : "error",
 				signalAborted: error instanceof CursorLiveRunAbortError,
 			}),
-		);
+		));
 		const activeLiveRun = prepared?.runtime.liveRun;
 		if (activeLiveRun && !activeLiveRun.disposed) {
 			await cursorLiveRuns.release(activeLiveRun);
 		} else {
-			await abandonSessionCursorAgent(prepared?.sessionAgentScopeKey);
+			await prepared?.lifecycle.abandon();
 		}
+		this.safeCleanup(() => this.params.sdkEventDebug()?.recordError("provider_stream", error));
 		if (error instanceof CursorLiveRunAbortError) {
 			this.params.sdkProcessErrorGuard.suppressAbortErrors();
 			this.pushTerminalError(this.params.runnerParams.partial, "aborted", this.abortMessage());

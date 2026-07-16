@@ -38,7 +38,13 @@ export function takeCursorLiveSdkTurnUsage(state: CursorLiveRunAccountingState):
 	sdkTurnUsage?: CursorSdkTurnUsage;
 } {
 	const { sdkTurnUsage, ...nextState } = state;
-	return { state: { ...nextState, sdkTurnEnded: false }, sdkTurnUsage };
+	return {
+		state: {
+			...nextState,
+			sdkTurnEnded: false,
+		},
+		sdkTurnUsage,
+	};
 }
 
 function asToolResultMessage(message: Message): ToolResultMessage | undefined {

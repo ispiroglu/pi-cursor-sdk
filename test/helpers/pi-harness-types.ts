@@ -11,6 +11,7 @@ import type {
 	SessionBeforeTreeEvent,
 	SessionBeforeCompactEvent,
 	SessionCompactEvent,
+	SessionInfoChangedEvent,
 	SessionShutdownEvent,
 	SessionStartEvent,
 	SessionTreeEvent,
@@ -19,6 +20,7 @@ import type {
 	ToolDefinition,
 	ToolInfo,
 	ToolResultEvent,
+	TurnEndEvent,
 	TurnStartEvent,
 } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
@@ -44,9 +46,11 @@ export type HarnessOn = ExtensionAPI["on"];
 
 export type HarnessEventName =
 	| "session_start"
+	| "session_info_changed"
 	| "model_select"
 	| "before_agent_start"
 	| "turn_start"
+	| "turn_end"
 	| "session_shutdown"
 	| "session_before_compact"
 	| "session_compact"
@@ -65,9 +69,11 @@ export type HarnessModelSelectEvent = {
 
 export type HarnessEventMap = {
 	session_start: SessionStartEvent;
+	session_info_changed: SessionInfoChangedEvent;
 	model_select: HarnessModelSelectEvent;
 	before_agent_start: BeforeAgentStartEvent;
 	turn_start: TurnStartEvent;
+	turn_end: TurnEndEvent;
 	session_shutdown: SessionShutdownEvent;
 	session_before_compact: SessionBeforeCompactEvent;
 	session_compact: SessionCompactEvent;
@@ -152,6 +158,10 @@ export interface EventHarness {
 		ctxOverrides?: ExtensionContextOverrides,
 	) => Promise<HarnessEventInvokeResult<"before_agent_start">>;
 	runTurnStart: (ctxOverrides?: ExtensionContextOverrides) => Promise<void>;
+	runTurnEnd: (
+		eventOverrides?: Partial<TurnEndEvent>,
+		ctxOverrides?: ExtensionContextOverrides,
+	) => Promise<void>;
 	runSessionShutdown: (
 		eventOverrides?: Partial<HarnessEventMap["session_shutdown"]>,
 		ctxOverrides?: ExtensionContextOverrides,

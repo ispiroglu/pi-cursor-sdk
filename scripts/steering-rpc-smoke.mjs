@@ -8,7 +8,12 @@ import { accessSync, chmodSync, constants, mkdirSync, mkdtempSync, rmSync, write
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseJsonLines, terminateChild, waitForChildClose } from "./lib/cursor-child-process.mjs";
+import {
+	CHILD_PROCESS_TREE_SPAWN_OPTIONS,
+	parseJsonLines,
+	terminateChild,
+	waitForChildClose,
+} from "./lib/cursor-child-process.mjs";
 import { apiKeySecretsFromProcess } from "./lib/cursor-cli-args.mjs";
 import { buildCursorSmokeEnv, CURSOR_SDK_EVENT_DEBUG_ENV_NAMES } from "./lib/cursor-smoke-env.mjs";
 import { scrubSensitiveText } from "../shared/cursor-sensitive-text.mjs";
@@ -66,7 +71,7 @@ async function waitForChildCloseWithTimeout(child, timeoutMs, outputSummary = ()
 			new Promise((_, reject) => {
 				timeout = setTimeout(() => {
 					const summary = outputSummary();
-					reject(new Error(`pi did not exit within ${timeoutMs}ms after agent_end${summary ? `\n${summary}` : ""}`));
+					reject(new Error(`pi did not exit within ${timeoutMs}ms after agent_settled${summary ? `\n${summary}` : ""}`));
 				}, timeoutMs);
 			}),
 		]);
@@ -168,7 +173,12 @@ async function runPiRpcSmoke(sessionDir, piBin) {
 	const args = ["--approve", "-e", root, "--cursor-no-fast", "--model", "cursor/composer-2-5", "--mode", "rpc", "--session-dir", sessionDir];
 	const env = buildPiRpcEnv();
 
-	const child = spawn(piBin, args, { cwd: root, env, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32" });
+	const child = spawn(piBin, args, {
+		cwd: root,
+		env,
+		stdio: ["pipe", "pipe", "pipe"],
+		...CHILD_PROCESS_TREE_SPAWN_OPTIONS,
+	});
 	let closed = false;
 	let stdout = "";
 	let stderr = "";
@@ -207,7 +217,7 @@ async function runPiRpcSmoke(sessionDir, piBin) {
 			() => stdout,
 			(events) => {
 				const text = assistantText(events);
-				return text.includes("STEER_OK=yes") && text.includes("STEER_CHAIN=ok") && events.some((event) => event.type === "agent_end");
+				return text.includes("STEER_OK=yes") && text.includes("STEER_CHAIN=ok") && events.some((event) => event.type === "agent_settled");
 			},
 		);
 
@@ -302,9 +312,9 @@ async function runSelfTest() {
 				await waitForChildCloseWithTimeout(hangingChild, 10, () => smokeOutputTail("STEER_OK=yes", ""));
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
-				closeTimedOut = message.includes("pi did not exit within 10ms after agent_end") && message.includes("stdoutTail=STEER_OK=yes");
+				closeTimedOut = message.includes("pi did not exit within 10ms after agent_settled") && message.includes("stdoutTail=STEER_OK=yes");
 			}
-			if (!closeTimedOut) fail("self-test failed: post-agent_end child close wait should be bounded and report output tail");
+			if (!closeTimedOut) fail("self-test failed: post-agent_settled child close wait should be bounded and report output tail");
 		} finally {
 			if (originalPiBin === undefined) delete process.env.PI_BIN;
 			else process.env.PI_BIN = originalPiBin;

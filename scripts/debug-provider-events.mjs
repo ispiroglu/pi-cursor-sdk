@@ -15,7 +15,12 @@ import {
 	parseArgv,
 	requireApiKey,
 } from "./lib/cursor-cli-args.mjs";
-import { parseJsonLines, terminateChild, waitForChildClose } from "./lib/cursor-child-process.mjs";
+import {
+	CHILD_PROCESS_TREE_SPAWN_OPTIONS,
+	parseJsonLines,
+	terminateChild,
+	waitForChildClose,
+} from "./lib/cursor-child-process.mjs";
 import { scrubSensitiveText } from "../shared/cursor-sensitive-text.mjs";
 import { createScriptFail } from "./lib/cursor-script-fail.mjs";
 import { serializeCursorSettingSources } from "../shared/cursor-setting-sources.mjs";
@@ -219,7 +224,7 @@ export async function runDebugProviderEvents(args, envInput = process.env) {
 		cwd: args.cwd,
 		env,
 		stdio: ["pipe", "pipe", "pipe"],
-		detached: process.platform !== "win32",
+		...CHILD_PROCESS_TREE_SPAWN_OPTIONS,
 	});
 	let closed = false;
 	let stdout = "";
@@ -243,7 +248,7 @@ export async function runDebugProviderEvents(args, envInput = process.env) {
 			const start = Date.now();
 			const tick = () => {
 				const events = parseJsonLines(stdout);
-				if (events.some((event) => event.type === "agent_end")) {
+				if (events.some((event) => event.type === "agent_settled")) {
 					resolve(events);
 					return;
 				}

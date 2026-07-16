@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { CursorSdkModule } from "../src/cursor-sdk-runtime.js";
 import {
 	configureCursorSdkHttp1,
@@ -11,6 +13,16 @@ describe("cursor HTTP/1.1 env support", () => {
 	beforeEach(() => {
 		setStoredCursorHttp1Enabled(undefined);
 	});
+
+	it("matches the installed Cursor SDK local useHttp1ForAgent configure contract", () => {
+		const sdkConfigTypes = readFileSync(
+			join(process.cwd(), "node_modules/@cursor/sdk/dist/esm/sdk-config.d.ts"),
+			"utf8",
+		);
+		expect(sdkConfigTypes).toContain("useHttp1ForAgent?: boolean | null");
+		expect(sdkConfigTypes).toContain("Pass `null` to clear a previous default.");
+	});
+
 	it("resolves PI_CURSOR_HTTP_1_1 using the shared env boolean convention", () => {
 		expect(resolveCursorHttp1Enabled({})).toBe(false);
 		expect(resolveCursorHttp1Enabled({ [CURSOR_HTTP1_ENV]: "true" })).toBe(

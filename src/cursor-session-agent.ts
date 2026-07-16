@@ -1,10 +1,5 @@
 import { createHash } from "node:crypto";
-import type {
-	AgentModeOption,
-	ModelSelection,
-	SDKAgent,
-	SettingSource,
-} from "@cursor/sdk";
+import type { AgentModeOption, LocalAgentOptions, ModelSelection, SDKAgent, SettingSource } from "@cursor/sdk";
 import type { Context } from "@earendil-works/pi-ai/compat";
 import {
 	getRegisteredCursorPiToolBridge,
@@ -12,10 +7,11 @@ import {
 	type CursorPiToolBridgeRun,
 } from "./cursor-pi-tool-bridge.js";
 import { computeCursorContextFingerprint } from "./context.js";
+import { getCursorSessionScopeGeneration, getCursorSessionScopeKey } from "./cursor-session-scope.js";
 import {
-	getCursorSessionScopeGeneration,
-	getCursorSessionScopeKey,
-} from "./cursor-session-scope.js";
+	getMatchingCursorSessionAgentResumeHandle,
+	persistCursorSessionAgentResumeHandle,
+} from "./cursor-session-agent-resume.js";
 import type { CursorSdkEventDebugRecorder } from "./cursor-sdk-event-debug.js";
 import { loadCursorSdk, type CursorSdkModule } from "./cursor-sdk-runtime.js";
 
@@ -33,6 +29,8 @@ export interface SessionCursorAgentLease {
 	bridgeRun?: CursorPiToolBridgeRun;
 	sendState: SessionCursorAgentSendState;
 	created: boolean;
+	resumed?: boolean;
+	resumeNotice?: string;
 	commitSend(context: Context, bootstrapped: boolean): void;
 	trackRunCompletion(completion: Promise<unknown>): void;
 }
@@ -44,8 +42,7 @@ interface SessionCursorAgentPoolEntryBase {
 	sendState: SessionCursorAgentSendState;
 }
 
-interface SessionCursorAgentCreatingEntry
-	extends SessionCursorAgentPoolEntryBase {
+interface SessionCursorAgentCreatingEntry extends SessionCursorAgentPoolEntryBase {
 	status: "creating";
 	creating: Promise<SessionCursorAgentReadyEntry>;
 	creationGeneration: number;
@@ -55,29 +52,31 @@ interface SessionCursorAgentReadyEntry extends SessionCursorAgentPoolEntryBase {
 	status: "ready";
 	agent: SDKAgent;
 	bridgeRun?: CursorPiToolBridgeRun;
+	resumeEnabled: boolean;
+	resumed: boolean;
+	resumeNotice?: string;
 }
 
 interface SessionCursorAgentBusyEntry extends SessionCursorAgentPoolEntryBase {
 	status: "busy";
 	agent: SDKAgent;
 	bridgeRun?: CursorPiToolBridgeRun;
+	resumeEnabled: boolean;
+	resumed: boolean;
+	resumeNotice?: string;
 	completionSettled: Promise<void>;
 	pendingCompletion: Promise<void>;
 	releaseBusyWait: () => void;
 	busyGeneration: number;
 }
 
-type SessionCursorAgentActiveEntry =
-	| SessionCursorAgentReadyEntry
-	| SessionCursorAgentBusyEntry;
+type SessionCursorAgentActiveEntry = SessionCursorAgentReadyEntry | SessionCursorAgentBusyEntry;
 type SessionCursorAgentPoolEntry =
 	| SessionCursorAgentCreatingEntry
 	| SessionCursorAgentReadyEntry
 	| SessionCursorAgentBusyEntry;
 
-type SessionCursorAgentPoolState =
-	| { status: "empty" }
-	| SessionCursorAgentPoolEntry;
+type SessionCursorAgentPoolState = { status: "empty" } | SessionCursorAgentPoolEntry;
 
 class SessionCursorAgentCreationSupersededError extends Error {
 	constructor() {
@@ -102,11 +101,7 @@ function assertScopeAcceptsAcquire(scopeKey: string): void {
 	terminalDisposedScopeGenerations.delete(scopeKey);
 }
 
-function rethrowSupersededWhenReplacedByDifferentPoolKey(
-	scopeKey: string,
-	poolKey: string,
-	error: unknown,
-): void {
+function rethrowSupersededWhenReplacedByDifferentPoolKey(scopeKey: string, poolKey: string, error: unknown): void {
 	if (!(error instanceof SessionCursorAgentCreationSupersededError)) return;
 	const replacement = sessionAgentsByScope.get(scopeKey);
 	if (replacement && replacement.poolKey !== poolKey) {
@@ -120,10 +115,14 @@ interface SessionCursorAgentCreateParams {
 	cwd: string;
 	modelSelection: ModelSelection;
 	settingSources?: SettingSource[];
+	localSafety?: CursorLocalSafetyOptions;
 	useHttp1ForAgent?: boolean;
 	onBridgeToolRequest?: (request: CursorPiBridgeToolRequest) => void;
 	debugRecorder?: CursorSdkEventDebugRecorder;
+	localResume?: boolean;
+	forceCreate?: boolean;
 	createAgent?: CursorSdkModule["Agent"]["create"];
+	resumeAgent?: CursorSdkModule["Agent"]["resume"];
 }
 
 const sessionAgentsByScope = new Map<string, SessionCursorAgentPoolEntry>();
@@ -133,19 +132,33 @@ const scopeCreationGenerations = new Map<string, number>();
 const EMPTY_POOL_STATE: SessionCursorAgentPoolState = { status: "empty" };
 let nextSessionAgentInstanceId = 1;
 
+export interface CursorLocalSafetyOptions {
+	autoReview?: boolean;
+	sandboxEnabled?: boolean;
+}
+
+export function buildCursorLocalAgentOptions(options: {
+	cwd: string;
+	settingSources?: SettingSource[];
+	localSafety?: CursorLocalSafetyOptions;
+}): LocalAgentOptions {
+	return {
+		cwd: options.cwd,
+		...(options.settingSources ? { settingSources: options.settingSources } : {}),
+		...(options.localSafety?.autoReview === true ? { autoReview: true } : {}),
+		...(options.localSafety?.sandboxEnabled === true ? { sandboxOptions: { enabled: true } } : {}),
+	};
+}
+
 function allocateSessionAgentInstanceId(): number {
 	return nextSessionAgentInstanceId++;
 }
 
-function getSessionCursorAgentPoolState(
-	scopeKey: string,
-): SessionCursorAgentPoolState {
+function getSessionCursorAgentPoolState(scopeKey: string): SessionCursorAgentPoolState {
 	return sessionAgentsByScope.get(scopeKey) ?? EMPTY_POOL_STATE;
 }
 
-function isActivePoolEntry(
-	entry: SessionCursorAgentPoolEntry | undefined,
-): entry is SessionCursorAgentActiveEntry {
+function isActivePoolEntry(entry: SessionCursorAgentPoolEntry | undefined): entry is SessionCursorAgentActiveEntry {
 	return entry?.status === "ready" || entry?.status === "busy";
 }
 
@@ -154,10 +167,7 @@ function getScopeCreationGeneration(scopeKey: string): number {
 }
 
 function invalidateScopeCreations(scopeKey: string): void {
-	scopeCreationGenerations.set(
-		scopeKey,
-		getScopeCreationGeneration(scopeKey) + 1,
-	);
+	scopeCreationGenerations.set(scopeKey, getScopeCreationGeneration(scopeKey) + 1);
 }
 
 function buildModelPoolKey(modelSelection: ModelSelection): string {
@@ -166,6 +176,13 @@ function buildModelPoolKey(modelSelection: ModelSelection): string {
 
 function buildSettingSourcesPoolKey(settingSources?: SettingSource[]): string {
 	return settingSources?.join(",") ?? "";
+}
+
+function buildLocalSafetyPoolKey(localSafety?: CursorLocalSafetyOptions): string {
+	return JSON.stringify({
+		autoReview: localSafety?.autoReview === true,
+		sandboxEnabled: localSafety?.sandboxEnabled === true,
+	});
 }
 
 function buildApiKeyPoolKeyFingerprint(apiKey: string): string {
@@ -178,24 +195,20 @@ function buildBridgePoolKeySuffix(): string {
 	return registeredBridge.getToolSurfaceSignature();
 }
 
-function buildSessionAgentPoolKey(
-	scopeKey: string,
-	params: SessionCursorAgentCreateParams,
-): string {
+function buildSessionAgentPoolKey(scopeKey: string, params: SessionCursorAgentCreateParams): string {
 	return [
 		scopeKey,
 		params.cwd,
 		buildModelPoolKey(params.modelSelection),
 		buildSettingSourcesPoolKey(params.settingSources),
+		buildLocalSafetyPoolKey(params.localSafety),
 		params.useHttp1ForAgent === true ? "http1:on" : "http1:off",
 		buildApiKeyPoolKeyFingerprint(params.apiKey),
 		buildBridgePoolKeySuffix(),
 	].join("\0");
 }
 
-async function disposePoolEntry(
-	entry: SessionCursorAgentPoolEntry,
-): Promise<void> {
+async function disposePoolEntry(entry: SessionCursorAgentPoolEntry): Promise<void> {
 	if (!isActivePoolEntry(entry)) return;
 	entry.bridgeRun?.cancel("Cursor session agent disposed");
 	try {
@@ -210,16 +223,10 @@ async function disposePoolEntry(
 	}
 }
 
-async function disposePoolEntryForScope(
-	scopeKey: string,
-	options?: { terminal?: boolean },
-): Promise<void> {
+async function disposePoolEntryForScope(scopeKey: string, options?: { terminal?: boolean }): Promise<void> {
 	invalidateScopeCreations(scopeKey);
 	if (options?.terminal) {
-		terminalDisposedScopeGenerations.set(
-			scopeKey,
-			getCursorSessionScopeGeneration(scopeKey),
-		);
+		terminalDisposedScopeGenerations.set(scopeKey, getCursorSessionScopeGeneration(scopeKey));
 	}
 	const entry = sessionAgentsByScope.get(scopeKey);
 	invalidatedScopeKeys.delete(scopeKey);
@@ -238,11 +245,7 @@ async function disposePoolEntryForScope(
 }
 
 function createInitialSendState(): SessionCursorAgentSendState {
-	return {
-		bootstrapped: false,
-		contextFingerprint: "",
-		incrementalSendCount: 0,
-	};
+	return { bootstrapped: false, contextFingerprint: "", incrementalSendCount: 0 };
 }
 
 function bindBridgeToolRequest(
@@ -266,9 +269,17 @@ function commitSessionAgentSendForLease(
 	entry.sendState.contextFingerprint = computeCursorContextFingerprint(context);
 	if (bootstrapped) {
 		entry.sendState.incrementalSendCount = 0;
-		return;
+	} else {
+		entry.sendState.incrementalSendCount += 1;
 	}
-	entry.sendState.incrementalSendCount += 1;
+	if (entry.resumeEnabled) {
+		persistCursorSessionAgentResumeHandle({
+			runtime: "local",
+			agentId: entry.agent.agentId,
+			poolKey: entry.poolKey,
+			sendState: entry.sendState,
+		});
+	}
 }
 
 function normalizeRunCompletion(completion: Promise<unknown>): Promise<void> {
@@ -323,20 +334,15 @@ function trackSessionAgentRunCompletionForLease(
 	if (entry.poolKey !== poolKey || entry.instanceId !== instanceId) return;
 
 	const completionToTrack = normalizeRunCompletion(completion);
-	const completionSettled =
-		entry.status === "busy"
-			? Promise.all([entry.completionSettled, completionToTrack]).then(
-					() => undefined,
-				)
-			: completionToTrack;
+	const completionSettled = (entry.status === "busy"
+		? Promise.all([entry.completionSettled, completionToTrack]).then(() => undefined)
+		: completionToTrack
+	);
 	if (entry.status === "busy") {
 		entry.releaseBusyWait();
 	}
 
-	sessionAgentsByScope.set(
-		scopeKey,
-		buildBusyPoolEntry(entry, completionSettled),
-	);
+	sessionAgentsByScope.set(scopeKey, buildBusyPoolEntry(entry, completionSettled));
 }
 
 function leaseFromEntry(
@@ -345,8 +351,11 @@ function leaseFromEntry(
 	params: SessionCursorAgentCreateParams,
 	created: boolean,
 ): SessionCursorAgentLease {
+	entry.resumeEnabled = params.localResume === true;
 	bindBridgeToolRequest(entry, params.onBridgeToolRequest);
 	entry.bridgeRun?.setDebugRecorder(params.debugRecorder);
+	const resumeNotice = entry.resumeNotice;
+	entry.resumeNotice = undefined;
 	return {
 		scopeKey,
 		poolKey: entry.poolKey,
@@ -355,30 +364,18 @@ function leaseFromEntry(
 		bridgeRun: entry.bridgeRun,
 		sendState: entry.sendState,
 		created,
+		resumed: entry.resumed,
+		...(resumeNotice ? { resumeNotice } : {}),
 		commitSend: (context, bootstrapped) => {
-			commitSessionAgentSendForLease(
-				scopeKey,
-				entry.poolKey,
-				entry.instanceId,
-				context,
-				bootstrapped,
-			);
+			commitSessionAgentSendForLease(scopeKey, entry.poolKey, entry.instanceId, context, bootstrapped);
 		},
 		trackRunCompletion: (completion) => {
-			trackSessionAgentRunCompletionForLease(
-				scopeKey,
-				entry.poolKey,
-				entry.instanceId,
-				completion,
-			);
+			trackSessionAgentRunCompletionForLease(scopeKey, entry.poolKey, entry.instanceId, completion);
 		},
 	};
 }
 
-function getCurrentReadyPoolEntry(
-	scopeKey: string,
-	poolKey: string,
-): SessionCursorAgentReadyEntry | undefined {
+function getCurrentReadyPoolEntry(scopeKey: string, poolKey: string): SessionCursorAgentReadyEntry | undefined {
 	const current = sessionAgentsByScope.get(scopeKey);
 	if (current?.status !== "ready") return undefined;
 	if (current.poolKey !== poolKey) return undefined;
@@ -425,19 +422,41 @@ async function createSessionAgentEntry(
 	}
 
 	const resolvedPoolKey = buildSessionAgentPoolKey(scopeKey, params);
-	const createAgent =
-		params.createAgent ?? (await loadCursorSdk()).Agent.create;
-	let agent: SDKAgent;
+	const resumeEligible = params.localResume === true && !params.forceCreate;
+	let createAgent = params.createAgent;
+	let resumeAgent = params.resumeAgent;
+	if (!createAgent || (resumeEligible && !resumeAgent)) {
+		const sdk = await loadCursorSdk();
+		createAgent ??= sdk.Agent.create;
+		resumeAgent ??= sdk.Agent.resume;
+	}
+	const agentOptions = {
+		apiKey: params.apiKey,
+		model: params.modelSelection,
+		mode: params.agentMode,
+		local: buildCursorLocalAgentOptions({
+			cwd: params.cwd,
+			settingSources: params.settingSources,
+			localSafety: params.localSafety,
+		}),
+		...(bridgeRun?.mcpServers ? { mcpServers: bridgeRun.mcpServers } : {}),
+	};
+	let agent: SDKAgent | undefined;
+	let effectiveSendState = sendState;
+	let resumed = false;
+	let resumeNotice: string | undefined;
+	const resumeHandle = resumeEligible ? getMatchingCursorSessionAgentResumeHandle(resolvedPoolKey) : undefined;
+	if (resumeHandle && resumeAgent) {
+		try {
+			agent = await resumeAgent(resumeHandle.agentId, agentOptions);
+			effectiveSendState = { ...resumeHandle.sendState };
+			resumed = true;
+		} catch {
+			resumeNotice = "Could not resume prior Cursor agent; continuing from current pi transcript in a new Cursor agent.";
+		}
+	}
 	try {
-		agent = await createAgent({
-			apiKey: params.apiKey,
-			model: params.modelSelection,
-			mode: params.agentMode,
-			local: params.settingSources
-				? { cwd: params.cwd, settingSources: params.settingSources }
-				: { cwd: params.cwd },
-			...(bridgeRun?.mcpServers ? { mcpServers: bridgeRun.mcpServers } : {}),
-		});
+		agent ??= await createAgent(agentOptions);
 	} catch (error) {
 		if (bridgeRun) {
 			bridgeRun.cancel("Cursor session agent create failed");
@@ -449,6 +468,7 @@ async function createSessionAgentEntry(
 		}
 		throw error;
 	}
+	if (!agent) throw new Error("Cursor SDK agent creation returned no agent");
 
 	return {
 		status: "ready",
@@ -457,7 +477,10 @@ async function createSessionAgentEntry(
 		scopeKey,
 		agent,
 		bridgeRun,
-		sendState,
+		sendState: effectiveSendState,
+		resumeEnabled: params.localResume === true,
+		resumed,
+		...(resumeNotice ? { resumeNotice } : {}),
 	};
 }
 
@@ -468,15 +491,11 @@ export {
 	type CursorSessionSendPlan,
 } from "./cursor-session-send-policy.js";
 
-export function invalidateSessionAgent(
-	scopeKey: string = getCursorSessionScopeKey(),
-): void {
+export function invalidateSessionAgent(scopeKey: string = getCursorSessionScopeKey()): void {
 	invalidatedScopeKeys.add(scopeKey);
 }
 
-export async function acquireSessionCursorAgent(
-	params: SessionCursorAgentCreateParams,
-): Promise<SessionCursorAgentLease> {
+export async function acquireSessionCursorAgent(params: SessionCursorAgentCreateParams): Promise<SessionCursorAgentLease> {
 	const scopeKey = getCursorSessionScopeKey();
 
 	while (true) {
@@ -488,10 +507,7 @@ export async function acquireSessionCursorAgent(
 		const poolKey = buildSessionAgentPoolKey(scopeKey, params);
 		const state = getSessionCursorAgentPoolState(scopeKey);
 
-		if (
-			(state.status === "ready" || state.status === "busy") &&
-			state.poolKey !== poolKey
-		) {
+		if ((state.status === "ready" || state.status === "busy") && state.poolKey !== poolKey) {
 			await disposePoolEntryForScope(scopeKey);
 			continue;
 		}
@@ -517,11 +533,7 @@ export async function acquireSessionCursorAgent(
 			} catch (error) {
 				if (error instanceof SessionCursorAgentCreationSupersededError) {
 					assertScopeAcceptsAcquire(scopeKey);
-					rethrowSupersededWhenReplacedByDifferentPoolKey(
-						scopeKey,
-						poolKey,
-						error,
-					);
+					rethrowSupersededWhenReplacedByDifferentPoolKey(scopeKey, poolKey, error);
 					continue;
 				}
 				throw error;
@@ -534,12 +546,7 @@ export async function acquireSessionCursorAgent(
 		const instanceId = allocateSessionAgentInstanceId();
 		const sendState = createInitialSendState();
 		let placeholder: SessionCursorAgentCreatingEntry;
-		const creating = createSessionAgentEntry(
-			scopeKey,
-			instanceId,
-			sendState,
-			params,
-		).then(async (createdEntry) => {
+		const creating = createSessionAgentEntry(scopeKey, instanceId, sendState, params).then(async (createdEntry) => {
 			const stillCurrent =
 				sessionAgentsByScope.get(scopeKey) === placeholder &&
 				getScopeCreationGeneration(scopeKey) === placeholder.creationGeneration;
@@ -566,25 +573,16 @@ export async function acquireSessionCursorAgent(
 
 		try {
 			const createdEntry = await creating;
-			const lease = await tryLeaseReadyEntry(
-				createdEntry,
-				scopeKey,
-				params,
-				poolKey,
-				true,
-			);
+			const lease = await tryLeaseReadyEntry(createdEntry, scopeKey, params, poolKey, true);
 			if (lease) return lease;
+			continue;
 		} catch (error) {
 			if (sessionAgentsByScope.get(scopeKey) === placeholder) {
 				sessionAgentsByScope.delete(scopeKey);
 			}
 			if (error instanceof SessionCursorAgentCreationSupersededError) {
 				assertScopeAcceptsAcquire(scopeKey);
-				rethrowSupersededWhenReplacedByDifferentPoolKey(
-					scopeKey,
-					poolKey,
-					error,
-				);
+				rethrowSupersededWhenReplacedByDifferentPoolKey(scopeKey, poolKey, error);
 				continue;
 			}
 			throw error;
@@ -592,30 +590,28 @@ export async function acquireSessionCursorAgent(
 	}
 }
 
-export async function resetSessionCursorAgent(
-	scopeKey: string = getCursorSessionScopeKey(),
-): Promise<void> {
+export type RefreshSessionCursorAgentConfigResult = "reloaded" | "no-agent" | "busy" | "unsupported";
+
+export async function refreshSessionCursorAgentConfig(scopeKey: string = getCursorSessionScopeKey()): Promise<RefreshSessionCursorAgentConfigResult> {
+	const entry = sessionAgentsByScope.get(scopeKey);
+	if (!entry || entry.status === "creating") return "no-agent";
+	if (entry.status === "busy") return "busy";
+	if (typeof entry.agent.reload !== "function") return "unsupported";
+	await entry.agent.reload();
+	return "reloaded";
+}
+
+export async function resetSessionCursorAgent(scopeKey: string = getCursorSessionScopeKey()): Promise<void> {
 	await disposePoolEntryForScope(scopeKey);
 }
 
-export async function disposeSessionCursorAgent(
-	scopeKey: string = getCursorSessionScopeKey(),
-): Promise<void> {
+export async function disposeSessionCursorAgent(scopeKey: string = getCursorSessionScopeKey()): Promise<void> {
 	await disposePoolEntryForScope(scopeKey, { terminal: true });
 }
 
 export async function disposeAllSessionCursorAgents(): Promise<void> {
-	const scopeKeys = [
-		...new Set([
-			...sessionAgentsByScope.keys(),
-			...terminalDisposedScopeGenerations.keys(),
-		]),
-	];
-	await Promise.all(
-		scopeKeys.map((scopeKey) =>
-			disposePoolEntryForScope(scopeKey, { terminal: true }),
-		),
-	);
+	const scopeKeys = [...new Set([...sessionAgentsByScope.keys(), ...terminalDisposedScopeGenerations.keys()])];
+	await Promise.all(scopeKeys.map((scopeKey) => disposePoolEntryForScope(scopeKey, { terminal: true })));
 	invalidatedScopeKeys.clear();
 	terminalDisposedScopeGenerations.clear();
 }
@@ -626,6 +622,7 @@ export const __testUtils = {
 	invalidateSessionAgent,
 	disposeSessionCursorAgent,
 	resetSessionCursorAgent,
+	refreshSessionCursorAgentConfig,
 	disposeAllSessionCursorAgents,
 	buildApiKeyPoolKeyFingerprint,
 	buildSessionAgentPoolKey,

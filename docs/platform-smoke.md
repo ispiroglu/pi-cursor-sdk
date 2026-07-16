@@ -1,6 +1,8 @@
 # Platform Smoke Gate
 
-Status: current release gate for Cursor provider/runtime changes. The Crabbox runner, packed-install platform-build suite, and real live PTY/ConPTY suite runner are implemented for macOS, Ubuntu, and Windows native targets with one-lease-per-target orchestration.
+Status: current local-runtime release gate for Cursor provider/runtime changes. Cloud-runtime changes also require the opt-in `npm run smoke:cloud` lane. The Crabbox runner, packed-install platform-build suite, and real live PTY/ConPTY suite runner are implemented for macOS, Ubuntu, and Windows native targets with one-lease-per-target orchestration.
+
+Detailed detector, registry, command-rendering, implementation-history, replacement, and portability reference: [Platform Smoke Implementation Reference](./platform-smoke-implementation.md).
 
 Branch introduced by: `feat/crabbox-platform-smoke`
 
@@ -10,7 +12,7 @@ Crabbox best-practice baseline applied from `~/Projects/crabbox`: Crabbox owns l
 
 ## Decision
 
-Crabbox is the required platform smoke runner for `pi-cursor-sdk` releases that touch Cursor provider/runtime behavior.
+Crabbox is the required local platform smoke runner for `pi-cursor-sdk` releases that touch Cursor provider/runtime behavior. PRs that touch actual cloud runtime execution must also run `npm run smoke:cloud`.
 
 Inner-loop checks remain useful, but they are not release gates:
 
@@ -19,10 +21,16 @@ npm run verify
 npm pack --dry-run
 ```
 
-The required release gate is exactly:
+The required local release gate is exactly:
 
 ```bash
 npm run smoke:platform:all
+```
+
+Cloud-runtime changes additionally require:
+
+```bash
+npm run smoke:cloud
 ```
 
 `smoke:platform:all` runs `smoke:platform:doctor` first and only starts the target matrix after doctor passes. Maintainers may still run `npm run smoke:platform:doctor` by itself for setup diagnosis.
@@ -35,7 +43,7 @@ No partial adoption exists. The release evidence must include macOS, Ubuntu, and
 ## Non-negotiable constraints
 
 - No GitHub Actions dependency.
-- No cloud provider dependency.
+- No cloud provider dependency in the default local platform gate; cloud-runtime changes use the separate opt-in cloud lane.
 - No Crabbox broker/coordinator dependency.
 - No release gate that runs on only one operating system.
 - No release gate that proves command behavior but not TUI visual behavior.
@@ -110,6 +118,16 @@ start target session
   run cursor-native-visual-matrix
   run cursor-bridge-visual-matrix
   run cursor-abort-cleanup
+  run cursor-local-resume-restart
+  run cursor-local-resume-safety
+  run cursor-local-resume-tool-surface
+  run cursor-local-resume-abort
+  run cursor-local-resume-tree
+  run cursor-local-resume-copy-switch
+  run cursor-local-resume-fallback
+  run cursor-local-resume-compaction
+  run cursor-local-resume-default-dry-run
+  run cursor-local-resume-cleanup
   download artifacts after every suite
   stop target
   write lease-cleanup stop evidence
@@ -123,7 +141,7 @@ Runtime budget is part of the contract:
 - `smoke:platform:doctor` never calls Cursor.
 - `platform-build` runs once per target and is the only suite that performs the full local CI/build/typecheck/package gate.
 - Live suites reuse the target checkout and prepared `node_modules` when run after `platform-build`; they do not repeat `npm ci` in a target-session release run.
-- Live suites share one target-local packed-install prep directory per target-session release run. The first live suite runs `npm pack` and `npm install --no-save <tarball>` once, then each suite still performs its own `pi install --approve -l <packed package path>`, `pi list --approve`, fresh `--session-dir`, suite `PI_CODING_AGENT_DIR`, workspace fixture, JSONL, visual, bridge, and abort assertions.
+- Live and local-resume suites share one target-local packed-install prep directory per target-session release run. The first such suite runs `npm pack` and `npm install --no-save <tarball>` once. Visual/abort suites install that packed path with `pi install --approve -l`; local-resume lanes pass the same packed package path to their source-tree smoke harness instead of loading the checkout extension.
 - Visual coverage is batched into one native prompt, one bridge prompt, and one abort/cleanup prompt per target. Do not split these into one prompt per card.
 - The gate is fail-fast by target to avoid burning Cursor calls after a platform has already failed.
 
@@ -137,6 +155,60 @@ Runtime budget is part of the contract:
 
 Ubuntu is covered as its own local-container target, and Windows native remains a full visual TUI target.
 
+## Opt-in cloud smoke lane
+
+Cloud validation is intentionally separate from `smoke:platform:all`. The required release gate keeps **no cloud provider dependency**; cloud runtime PRs must also run the opt-in cloud lane when they touch actual cloud execution.
+
+Run:
+
+```bash
+npm run smoke:cloud
+```
+
+The default lane is intentionally minimal: it starts one non-interactive cloud run in a fresh persisted pi session (Cloud rejects `--no-session` so lifecycle intent can be fsynced before remote work), with explicit acknowledgement, fresh context, no pi bridge, no env forwarding, SDK event-debug contract checks, bounded stream-only cloud report shape checks, and cloud-agent archival cleanup with post-archive `archived: true` verification. Raw usage/artifact presence is account-dependent, so display-only accounting and artifact formatting contracts stay covered by unit/provider tests. It must fail closed when requested but unavailable:
+
+- missing cloud-capable credentials, repo access, or cloud entitlement → report **blocked**, not skipped-ready;
+- no non-interactive prompts; every needed cloud choice must come from CLI/env/config;
+- do not expose inline cloud MCP in the first cloud runtime lane;
+- do not forward local env values;
+- harvest exact throwaway agent IDs from optional debug metadata plus canonical session JSONL/lifecycle journals, archive the full union, and verify archived metadata before passing;
+- retain the entire artifact root whenever the run or any cleanup fails (successful runs remove it unless `CURSOR_CLOUD_SMOKE_KEEP_ARTIFACTS=1`).
+
+Focused optional proof: `npm run smoke:cloud:context` runs a separate sessionful context-handoff matrix. Use it when changing cloud context-handoff behavior or gathering default-on/cloud-resume evidence. `fresh` must answer `NO_MARKER` for a prior-marker recall prompt, while `bootstrap` must recall the marker. It archives and verifies every exact cloud agent ID observed in debug metadata or canonical lifecycle artifacts.
+
+Future expanded cloud smoke work should add throwaway repo/branch coverage, dirty/unpushed warning assertions, branch/PR behavior, explicit direct-push opt-in, missing-branch failure, cancel/delete cleanup, and account-backed artifact/raw-usage fixtures when those contracts need live proof beyond the current report-shape and context-handoff smokes.
+
+This lane is a cloud-runtime release gate, not a substitute for the local macOS/Ubuntu/Windows `smoke:platform:all` gate.
+
+## Focused local resume smoke
+
+The platform matrix includes the required local-resume lanes: restart, safety, tool-surface, abort, tree, copy/switch, fallback, compaction, default/opt-out proof, and recorded-ID-only cleanup. Platform lanes run those scripts against the target's shared packed package path, then copy each lane's session JSONL, Cursor SDK debug metadata, runtime-launch record, and other bounded smoke artifacts into its canonical platform suite directory. The same scripts still load the source checkout by default when run directly as focused host-local inner-loop checks. Windows uses the intentionally short target-side evidence component `lr` so the Cursor SDK's derived SQLite path remains below legacy `MAX_PATH`; every suite removes and verifies that directory before use, failing closed on stale or locked evidence.
+
+The smoke starts one sessionful local Cursor run with local resume enabled by default, records the SDK agent id from provider debug metadata, restarts pi against the same session, asks for the remembered marker, and verifies:
+
+- the first run records `localResume: true` and `resumedAgent: false`;
+- the second run records `localResume: true`, `resumedAgent: true`, and a one-time bootstrap send plan;
+- both runs use the same local SDK `agent-*` id;
+- the remembered marker survives the process restart from the bootstrapped current pi transcript.
+
+The safety lane verifies an original session resumes the same local agent after restart, then proves cloned-session copied resume entries and a fork before a future-marker prompt both create a new local `agent-*`. The forked earlier branch must not reveal the future marker.
+
+The tool-surface lane verifies same-session restart reuses the original local agent with the same bridge/tool surface, then enables the builtin pi tool bridge surface and verifies the old resume handle is rejected, a bridge run is created, a new local `agent-*` is used, and a new resume pool key is persisted.
+
+The abort lane verifies a completed bridge-enabled turn persists a local resume handle, an interrupted long-running bridge turn starts from that handle but does not append a new one, and the next same-surface restart uses a new local `agent-*` instead of resuming the pre-abort agent.
+
+The tree lane verifies both realistic navigation to an earlier assistant entry and direct navigation to an earlier `cursor-sdk-agent-resume` custom entry reject the future-seeing SDK agent and do not reveal the future-only marker.
+
+The copy/switch lane copies a session file containing resume custom entries, switches to that copied file, and verifies the copied handle is rejected while transcript bootstrap still recalls the marker.
+
+The fallback lane rewrites a persisted handle to a missing local SDK `agent-*`, verifies create+bootstrap fallback, and asserts the continuity notice is emitted in `pi-stream-events.jsonl`.
+
+The compaction lane uses an isolated temp pi settings file with `compaction.keepRecentTokens: 1` to force manual compaction without huge dummy prompts. It verifies the pre-compaction SDK agent is not reused, the new handle records `compactionGeneration: 1`, and restart resumes the post-compaction agent.
+
+The default/opt-out lane verifies the built-in local resume default resumes, then verifies `PI_CURSOR_LOCAL_RESUME=0` opts out and creates a new agent while bootstrapping the transcript.
+
+The cleanup lane verifies `/cursor-local-resume-cleanup --dry-run` reports only recorded superseded local `agent-*` IDs, `/cursor-local-resume-cleanup --yes` verifies and fsyncs intent before deleting exactly the old recorded ID and fsyncs the result afterward, the current recorded agent still resumes, and tree navigation to the old handle falls back instead of resuming the deleted agent.
+
 ## Files and scripts
 
 Files:
@@ -144,6 +216,10 @@ Files:
 ```text
 platform-smoke.config.mjs
 scripts/platform-smoke.mjs
+scripts/platform-smoke/artifact-bundle-chunk.mjs
+scripts/platform-smoke/artifact-bundle-contract.mjs
+scripts/platform-smoke/artifact-fs-safety.mjs
+scripts/platform-smoke/artifact-secrets.mjs
 scripts/platform-smoke/assertions.mjs
 scripts/platform-smoke/artifacts.mjs
 scripts/platform-smoke/card-detect.mjs
@@ -151,25 +227,48 @@ scripts/platform-smoke/crabbox-runner.mjs
 scripts/platform-smoke/doctor.mjs
 scripts/platform-smoke/jsonl-text.mjs
 scripts/platform-smoke/live-suite-runner.mjs
+scripts/platform-smoke/local-resume-runner.mjs
+scripts/platform-smoke/local-resume-suites.mjs
 scripts/platform-smoke/platform-build-windows.ps1
 scripts/platform-smoke/pty-capture.mjs
 scripts/platform-smoke/render-ansi.mjs
 scripts/platform-smoke/scenarios.mjs
+scripts/platform-smoke/target-runtime.mjs
 scripts/platform-smoke/targets.mjs
 scripts/platform-smoke/visual-evidence.mjs
+scripts/platform-smoke/wrapped-line-match.mjs
 ```
+
+`artifact-bundle-contract.mjs` owns bundle transport markers/path/size caps and the canonical
+exact-size base64 decoder. `artifact-secrets.mjs` owns redaction patterns and scanning.
+`artifact-fs-safety.mjs` owns no-follow traversal/identity primitives, bounded reads, safe
+extraction writes/cleanup, and the exclusive bundle spill writer. `artifacts.mjs` retains
+retention/manifest/index bookkeeping and bundle build/format/extract orchestration on top of
+those three modules, re-exporting their public names for backward compatibility.
 
 Package scripts:
 
 ```json
 {
-  "check:platform-smoke": "node --check platform-smoke.config.mjs && node --check <platform smoke scripts> && vitest run test/smoke-tooling.test.ts",
+  "check:platform-smoke": "node --check platform-smoke.config.mjs && node --check <platform smoke scripts> && vitest run test/platform-artifact-boundaries.test.ts test/platform-smoke-artifact-transport.test.ts test/smoke-cli-package-contracts.test.ts test/smoke-tooling.test.ts",
   "smoke:platform": "node scripts/platform-smoke.mjs",
   "smoke:platform:doctor": "node scripts/platform-smoke.mjs doctor",
   "smoke:platform:macos": "node scripts/platform-smoke.mjs run --target macos",
   "smoke:platform:ubuntu": "node scripts/platform-smoke.mjs run --target ubuntu",
   "smoke:platform:windows-native": "node scripts/platform-smoke.mjs run --target windows-native",
-  "smoke:platform:all": "npm run smoke:platform:doctor && node scripts/platform-smoke.mjs run --target macos,ubuntu,windows-native"
+  "smoke:platform:all": "npm run smoke:platform:doctor && node scripts/platform-smoke.mjs run --target macos,ubuntu,windows-native",
+  "smoke:cloud": "node scripts/cloud-runtime-smoke.mjs",
+  "smoke:cloud:context": "node scripts/cloud-runtime-smoke.mjs --context-matrix",
+  "smoke:local-resume": "node scripts/local-resume-smoke.mjs",
+  "smoke:local-resume:safety": "node scripts/local-resume-smoke.mjs --safety",
+  "smoke:local-resume:tool-surface": "node scripts/local-resume-smoke.mjs --tool-surface",
+  "smoke:local-resume:abort": "node scripts/local-resume-smoke.mjs --abort",
+  "smoke:local-resume:tree": "node scripts/local-resume-smoke.mjs --tree",
+  "smoke:local-resume:copy-switch": "node scripts/local-resume-smoke.mjs --copy-switch",
+  "smoke:local-resume:fallback": "node scripts/local-resume-smoke.mjs --fallback",
+  "smoke:local-resume:compaction": "node scripts/local-resume-smoke.mjs --compaction",
+  "smoke:local-resume:default-dry-run": "node scripts/local-resume-smoke.mjs --default-dry-run",
+  "smoke:local-resume:cleanup": "node scripts/local-resume-smoke.mjs --cleanup"
 }
 ```
 
@@ -182,6 +281,8 @@ All repo-specific behavior lives in `platform-smoke.config.mjs` so the framework
 Required config fields:
 
 ```js
+import { LOCAL_RESUME_SUITE_NAMES } from "./scripts/platform-smoke/local-resume-suites.mjs";
+
 export default {
   packageName: "pi-cursor-sdk",
   cursorModel: "cursor/composer-2-5",
@@ -197,12 +298,14 @@ export default {
     "cursor-native-visual-matrix",
     "cursor-bridge-visual-matrix",
     "cursor-abort-cleanup",
+    ...LOCAL_RESUME_SUITE_NAMES,
   ],
   requiredCrabbox: {
     install: "Homebrew package or PLATFORM_SMOKE_CRABBOX override",
     minVersion: "0.26.0",
   },
-  ubuntuContainerImage: "cimg/node:24.16",
+  ubuntuContainerImage: "pi-cursor-sdk-platform-node:24.16-root",
+  ubuntuContainerBaseImage: "cimg/node:24.16",
   nodeValidationMajor: 24,
   windowsParallels: {
     sourceVm: "pi-extension-windows-template",
@@ -212,7 +315,7 @@ export default {
 };
 ```
 
-`ubuntuContainerImage` defaults the local-container Ubuntu target to an Ubuntu 24.04 Node 24 image with a current glibc baseline for native test dependencies; Crabbox still bootstraps SSH/Git/rsync/curl as needed. `nodeValidationMajor: 24` is the release-smoke validation baseline. It does not change the package engine by itself. A separate compatibility lane can test Node 22.19 later; this required gate validates Node 24 on every target.
+`ubuntuContainerBaseImage` is the Ubuntu 24.04 Node 24 base with the current glibc baseline for native test dependencies. The runner builds the local `ubuntuContainerImage` wrapper with only `USER root` changed before warmup because Crabbox 0.36.0 must install SSH/Git/rsync/curl during bootstrap and `cimg/node` defaults to an unprivileged user. An explicit `PLATFORM_SMOKE_UBUNTU_IMAGE` bypasses that build and must already support Crabbox bootstrap. `nodeValidationMajor: 24` is the release-smoke validation baseline. It does not change the package engine by itself. A separate compatibility lane can test Node 22.19 later; this required gate validates Node 24 on every target.
 
 `windowsParallels` records this repo's default shared Windows template contract. Environment overrides may point at a temporary candidate template during infrastructure work, but release runs should use the shared `pi-extension-windows-template` / `crabbox-ready` baseline unless this document is updated.
 
@@ -229,7 +332,8 @@ PLATFORM_SMOKE_CRABBOX=/opt/homebrew/bin/crabbox
 PLATFORM_SMOKE_MAC_HOST=localhost
 PLATFORM_SMOKE_MAC_USER="$USER"
 PLATFORM_SMOKE_MAC_WORK_ROOT="/Users/$USER/crabbox/pi-cursor-sdk"
-PLATFORM_SMOKE_UBUNTU_IMAGE="cimg/node:24.16"
+# Optional prebuilt replacement; bypasses the configured local root-wrapper build.
+PLATFORM_SMOKE_UBUNTU_IMAGE="registry.example.com/ubuntu-node24-crabbox:latest"
 
 # Optional Parallels overrides; defaults come from platform-smoke.config.mjs.
 PLATFORM_SMOKE_WINDOWS_VM="pi-extension-windows-template"
@@ -409,6 +513,34 @@ Purpose:
 - produce the packed extension used by later suites.
 
 The host `smoke:platform:all` entrypoint enforces doctor first before running targets. Required artifacts include `node-version.txt`, `npm-version.txt`, stdout/stderr for `npm ci`, `npm run check:platform-smoke`, `npm test`, `npm run typecheck`, `npm pack`, packed npm install, `pi install --approve`, and `pi list --approve`, plus `packed-tarball.txt`, `summary.json`, `artifact-manifest.json`, `assertions.json`, and `failures.md` on failed assertions.
+
+### `cursor-local-resume-restart`
+
+Cursor calls: `2`.
+
+Purpose:
+
+- prove guarded local resume default-on behavior across a pi process restart on each required OS;
+- assert the first turn creates a local `agent-*` and the second turn resumes the same `agent-*`;
+- force local runtime and clear cloud env knobs so ambient cloud settings cannot satisfy this suite.
+
+The suite prepares or reuses the target's packed npm install, runs `npm run smoke:local-resume` with that packed extension path, and asserts the `local-resume-smoke-ok` marker plus the resumed local agent id line. It also requires extracted session, debug, and runtime-launch evidence under `local-resume-evidence/`; checkout `pi -e <repo-root>` is reserved for the standalone inner-loop command.
+
+### `cursor-local-resume-*` focused proof lanes
+
+The remaining local-resume platform suites run the matching focused package script against the shared packed extension on each target, retain the same evidence categories, and assert its success marker plus stderr evidence line:
+
+| Suite | Package script | Purpose |
+| --- | --- | --- |
+| `cursor-local-resume-safety` | `npm run smoke:local-resume:safety` | clone rejection and fork-before-future no-leak |
+| `cursor-local-resume-tool-surface` | `npm run smoke:local-resume:tool-surface` | stale handle rejection after bridge/tool-surface change |
+| `cursor-local-resume-abort` | `npm run smoke:local-resume:abort` | interrupted bridge turn does not persist/reuse stale handle |
+| `cursor-local-resume-tree` | `npm run smoke:local-resume:tree` | earlier assistant and resume-entry tree targets reject future-seeing agent |
+| `cursor-local-resume-copy-switch` | `npm run smoke:local-resume:copy-switch` | copied session file rejects copied resume handle |
+| `cursor-local-resume-fallback` | `npm run smoke:local-resume:fallback` | missing local agent falls back with continuity notice |
+| `cursor-local-resume-compaction` | `npm run smoke:local-resume:compaction` | compaction boundary creates/resumes post-compaction generation |
+| `cursor-local-resume-default-dry-run` | `npm run smoke:local-resume:default-dry-run` | built-in default resumes and env opt-out wins |
+| `cursor-local-resume-cleanup` | `npm run smoke:local-resume:cleanup` | recorded-ID-only cleanup deletes old agent and preserves current agent |
 
 ### `cursor-native-visual-matrix`
 
@@ -619,13 +751,23 @@ Per target maximum live Cursor invocations:
 cursor-native-visual-matrix: 1
 cursor-bridge-visual-matrix: 1
 cursor-abort-cleanup: 1
+cursor-local-resume-restart: 2
+cursor-local-resume-safety: 5
+cursor-local-resume-tool-surface: 3
+cursor-local-resume-abort: 3
+cursor-local-resume-tree: 4
+cursor-local-resume-copy-switch: 2
+cursor-local-resume-fallback: 2
+cursor-local-resume-compaction: 5
+cursor-local-resume-default-dry-run: 3
+cursor-local-resume-cleanup: 4
 ```
 
-Maximum per target: `3` Cursor invocations.
+Maximum per target: `36` Cursor invocations.
 
-Maximum full gate: `9` Cursor invocations.
+Maximum full gate: `108` Cursor invocations.
 
-The merge gate is `npm run smoke:platform:all`; that script runs doctor first and then the matrix to preserve this budget. No suite adds a new Cursor invocation without updating this plan and `platform-smoke.config.mjs`.
+The merge gate is `npm run smoke:platform:all`; that script runs doctor first and then the matrix to preserve this budget. No suite adds a new Cursor invocation without updating this plan and the scenario source of truth (`scripts/platform-smoke/scenarios.mjs`, plus `scripts/platform-smoke/local-resume-suites.mjs` for local-resume lanes).
 
 ## Artifact contract
 
@@ -647,7 +789,7 @@ After each `smoke:platform run` invocation, the host writes an atomic latest art
 .artifacts/platform-smoke/latest.json
 ```
 
-`latest.json` records the invocation timestamps, command selection, PID, run id(s), target/suite artifact directories, paths to suite summaries/assertions/failures when present, rendered terminal HTML/PNG paths, visual evidence, session JSONL, JSONL tool-result summaries, and capped Cursor SDK/provider debug artifact paths. The per-suite artifact directories remain the source of truth; `latest.json` is only a discoverability pointer.
+`latest.json` records the invocation timestamps, command selection, PID, run id(s), target/suite artifact directories, paths to suite summaries/assertions/failures when present, rendered terminal HTML/PNG paths, visual evidence, session JSONL, JSONL tool-result summaries, capped Cursor SDK/provider debug artifact paths, and local-resume evidence roots/indexes/runtime-launch records. The per-suite artifact directories remain the source of truth; `latest.json` is only a discoverability pointer.
 
 Common required artifacts:
 
@@ -730,6 +872,17 @@ cursor-sdk-events/
   sessions/**/<turn-artifact>.json or .jsonl
 ```
 
+Required local-resume artifacts:
+
+```text
+local-resume-evidence.json        # counts retained files by evidence category
+local-resume-evidence/
+  runtime-launches.jsonl          # proves the packed extension path used by each pi process
+  sessions/**/*.jsonl
+  debug/**/*                      # Cursor SDK/provider turn metadata
+  agent/**/*                      # bounded non-secret runtime state when written
+```
+
 Required abort artifacts:
 
 ```text
@@ -743,27 +896,18 @@ Provider debug artifacts are required for every live suite through `PI_CURSOR_SD
 
 ## Artifact collection on failure
 
-Crabbox success-path download is not sufficient. The target-side suite wrapper must always package artifacts before returning to the host.
+The target-side live and local-resume runners encode only canonical bounded text evidence as gzip-compressed JSON/base64. Unknown extensions are secret-scanned and then omitted when benign; a secret finding still fails the run. Binary content under a transport-eligible text extension fails with bounded `binary-content` evidence, and direct bundles containing either unknown extensions or binary content are never extracted. The inner bundle schema is exactly `{files}`, and each entry is exactly `{path, contentBase64, size}`: source-root and per-file metadata are rejected, canonical paths and decoded content are secret-scanned, secret-bearing paths are rejected, and filenames in findings are redacted. The caller-selected artifact root is a trust boundary. Its final component must be a real directory, and its real path must equal the same relative path mapped beneath the canonical real CWD or temp base. This permits expected platform base aliases such as macOS `/var` → `/private/var` but rejects user-created intermediate root links. Every traversed directory is secured with lstat/open/fstat/post-lstat identity checks (POSIX opens use `O_DIRECTORY|O_NOFOLLOW`), its descriptor stays open while descendants are visited, and all current/ancestor identities plus the original ctime, mtime, size, link count, and mode are rechecked around directory reads and bounded file reads. These immutable metadata checks apply only to traversal guards; extraction uses identity-only guards because creating destination entries legitimately mutates parent metadata. Every regular artifact file, regardless of name or extension, is binary-safe scanned from a descriptor-bounded snapshot before transport eligibility is checked. Binary scans retain exact `CURSOR_API_KEY`, generic auth assignments, and structured bearer/cookie/bridge/JSON signatures in UTF-8/ASCII, UTF-16LE/BE, and UTF-32LE/BE at any byte alignment; the intentionally broad generic credential-URL and SCP-style heuristics run only on valid UTF-8 text so random compressed/executable bytes cannot create false failures. Static child symlinks fail as non-regular entries; a nested rename/symlink ABA invalidates the whole traversal, discarding collected findings and bytes in favor of bounded failure evidence. Sensitive files (`.env*`, `auth.json`, `id_rsa`, `id_ed25519`, `*.pem`, and `*.key`) therefore fail the run when they contain secrets but are never transported. `node_modules/` and `.git/` are non-artifact infrastructure and are pruned before recursion. File size is checked before allocation or reading. An unreadable, changed, or oversized file fails closed; oversized files are not read and produce bounded limit evidence, while the host scanner reports an oversized or otherwise unscannable artifact as a finding so the suite fails. Bundles allow at most 512 files, 5 MiB per file, 40 MiB aggregate decoded content, 4,096 UTF-8 bytes per path, 4,096 total path components, 64 MiB inflated JSON, and 20 MiB compressed transport. The writer and extractor enforce the same limits; limit overflow emits only a bounded `bundle-limit-exceeded.json` failure artifact. Before host filesystem mutation, extraction rejects duplicate and file-prefix-conflicting paths, symlink/non-directory destination components, and pre-existing final paths. On POSIX controllers it sends the already prevalidated bounded files to the packaged `artifact-openat-extract.c` helper, compiled once into a private temporary directory. The helper independently validates the complete frame before mutation, requires its opened root identity to match the caller's pinned root, and uses descriptor-relative `mkdirat`/`openat` with `O_NOFOLLOW` one canonical component at a time. Substituted symlinks and pre-open path swaps therefore fail without following them, final files use `O_EXCL`, and detected identity drift rolls created files back through retained parent descriptors even when a directory was moved. This is race-safe extraction, not a sandbox against a hostile same-owner process: such a process can transiently relocate an already-open directory or the pinned root itself, although it cannot make extraction overwrite an existing destination. Windows controllers reject every nonempty extraction bundle before mutation because Node exposes no handle-relative Windows creation API; Windows remains a supported release target when the matrix is orchestrated from the macOS/POSIX controller. Small bundles stay between `PLATFORM_LIVE_BUNDLE_JSON_START` and `PLATFORM_LIVE_BUNDLE_JSON_END`; larger bundles exclusively create and descriptor-write the exact CWD-relative `.platform-artifact-bundle.gz` final component (`O_NOFOLLOW` on POSIX), emit that exact marker path, and allow chunk reads only for that one-component path. No intermediate spill path is accepted. Windows uses lstat identity checks for directories and lstat/fstat identity checks for regular files and the spill, without POSIX-only flags. The host retrieves exact 32 KiB chunks through no-sync Crabbox runs before releasing the lease. Compact control output is collected through Crabbox's local `--capture-stdout` file. This works on scenario failure and preserves the original command exit code; chunk transport success is not substituted for suite success, and no tar/zip side channel exists.
 
-Required target wrapper behavior:
+Required fail-through behavior:
 
-1. Run the scenario.
-2. Capture real scenario exit/assertion state in `exit-code.txt` and `assertions.json`.
-3. Write `failures.md` when assertions fail.
-4. Package the suite artifact directory.
-5. Exit `0` for Crabbox transport so the archive downloads.
-6. Let the host runner fail after unpacking and reading `assertions.json`.
+1. Run the scenario and write target-side session/debug/runtime evidence.
+2. Encode the artifact bundle in a `finally` path after applying path, secret, file-size, file-count, aggregate, inflated-JSON, and compressed-size limits; emit it inline or write the marked gzip file. Any bound overflow or traversal invalidation must emit the bounded limit-failure artifact instead of partial evidence, prior findings, or bytes.
+3. Preserve the real scenario process exit code in Crabbox output.
+4. Before lease release, have the host fetch any marked chunks and call `extractPlatformArtifactBundle()` even for a nonzero result.
+5. Write host-side `exit-code.txt`, `assertions.json`, and `failures.md` from the process result plus extracted evidence.
+6. Verify the canonical `artifact-manifest.json`; missing or unsafe bundle content fails the suite.
 
-Crabbox command exit means transport status. Suite pass/fail comes from `assertions.json`.
-
-Archive names:
-
-```text
-<target>-<suite>-artifacts.tar.gz   # macOS, Ubuntu
-<target>-<suite>-artifacts.zip      # Windows native
-```
-
-The host unpacks into the canonical artifact directory and verifies `artifact-manifest.json`.
+There is no tar/zip side channel. Crabbox stdout carries the inline bundle or its authenticated retrieval marker/chunks, while the canonical host suite directory remains the durable source of truth.
 
 ## Assertion contract
 
@@ -791,81 +935,9 @@ Failures produce `failures.md` with:
 - command summary;
 - next diagnostic command.
 
-## Visual evidence detector
-
-The detector operates on host-rendered terminal HTML and PNG evidence. It must not pass from prompt text alone.
-
-Required behavior:
-
-- render ANSI with xterm/Playwright and assert the terminal DOM/theme is present, styled, non-empty, and screenshotted;
-- search the rendered xterm buffer for suite-owned evidence patterns that correspond to actual tool output/results, not instructions in the prompt;
-- scroll to each evidence line and write `cards/<evidence-id>.png` screenshots plus `visual-evidence.json`;
-- write `cards.json` for the legacy rendered-evidence inventory;
-- fail when required visual evidence is missing;
-- fail when a card/evidence item has the wrong success/error state;
-- fail when footer/status is missing or unreadable.
-
-Meaningful gap closed: earlier card assertions could pass when the prompt mentioned `pi__read` or a missing-file path even if the actual tool card/result never rendered. The gate now requires JSONL result evidence and per-evidence rendered screenshots for native read, native shell success/failure, native edit diffs, bridge read success/failure, and bridge shell success.
-
-## Registry visual classification
-
-The implementation must classify every `CURSOR_TOOL_PRESENTATION_SPECS` entry from `src/cursor-tool-presentation-registry.ts` as required or excluded for the release visual gate. A validation check fails when a registry entry lacks classification.
-
-Required deterministic cards:
-
-- `read`
-- `grep`
-- `glob` / find
-- `shell`
-- `write`
-- `edit`
-- failed `read`
-
-Excluded from release visual matrix with required rationale:
-
-- `delete`: destructive and redundant with file mutation card coverage.
-- `readLints`: dependent on target diagnostics state.
-- `updateTodos`: model workflow dependent.
-- `createPlan`: model workflow dependent.
-- `task`: model/task orchestration dependent.
-- `generateImage`: external image generation surface.
-- `mcp`: separate MCP integration surface beyond built-in bridge smoke.
-- `semSearch`: semantic index state dependent.
-- `recordScreen`: desktop capture dependency outside terminal smoke.
-- `webSearch`: network/search dependent.
-- `webFetch`: network dependent.
-
-Adding a registry entry requires adding it to the required or excluded list with rationale. `ls` is currently excluded from the required one-prompt matrix because composer-2-5 does not route the deterministic source-enumeration step through the native `ls` surface reliably; the suite instead gates that behavior through a successful native `find` result for `src/cursor-provider.ts`.
-
-## Platform command rendering
-
-Scenario commands are not raw shell strings. The runner renders commands per target:
-
-- `posix` for macOS and Ubuntu.
-- `powershell` for Windows native.
-
-Scenario shape:
-
-```js
-{
-  id: "cursor-native-visual-matrix",
-  requires: ["cursor-auth", "pty", "packed-install"],
-  promptTemplate: "... <platform-command:shellSmoke> ...",
-  commands: {
-    shellSmoke: {
-      posix: "printf 'cursor visual smoke\\n'",
-      powershell: "Write-Output 'cursor visual smoke'",
-    },
-  },
-  assertions: ["final-marker", "required-cards", "jsonl-tools"],
-}
-```
-
-The renderer owns quoting, path normalization, environment assignment, and archive packaging.
-
 ## Security and redaction
 
-The runner must scan every artifact and fail on:
+The runner must binary-safe scan every bounded regular artifact file, including transport-excluded sensitive names and unknown extensions, and fail closed when a file exceeds the scan cap, cannot be scanned, or is non-regular. It never follows non-regular entries or transports sensitive filenames. Non-artifact infrastructure (`node_modules/` and `.git/`) is pruned. The workspace-root `.platform-artifact-bundle.gz` spill is outside scenario artifact roots and is ignored by Git. It fails on:
 
 - the literal `CURSOR_API_KEY` value;
 - bearer tokens;
@@ -877,154 +949,18 @@ The runner must scan every artifact and fail on:
 
 Bridge diagnostics may include safe tool names and correlation IDs only.
 
-## Implementation phases
-
-### Phase 0: plan-only branch state
-
-Create this plan on `feat/crabbox-platform-smoke`. Do not implement code in this phase.
-
-### Phase 1: dependency spike
-
-Verify `node-pty` and ConPTY on every target before committing the dependency.
-
-Exit criteria:
-
-- node-pty self-test passes on macOS;
-- node-pty self-test passes on Ubuntu local-container;
-- node-pty self-test passes on Windows native Node 24.
-
-### Phase 2: config and doctor
-
-Add config, CLI skeleton, doctor, and npm scripts.
-
-Exit criteria:
-
-```bash
-npm run smoke:platform:doctor
-```
-
-passes only when all required local setup exists.
-
-### Phase 3: target session manager
-
-Implement Crabbox target lifecycle for all three targets.
-
-Exit criteria:
-
-- each target can acquire/warm;
-- each target can sync;
-- each target can run `node --version`;
-- each target can package/download a trivial artifact;
-- each target can stop/cleanup;
-- one lease per target session.
-
-### Phase 4: `platform-build`
-
-Implement build/package/install suite.
-
-Exit criteria: `platform-build` passes on all targets through `smoke:platform:all -- --suite platform-build` without live Cursor calls.
-
-### Phase 5: PTY capture and host render
-
-Implement PTY/ConPTY capture and host-side xterm/Playwright render.
-
-Exit criteria:
-
-- ANSI capture works on all targets;
-- host render writes HTML, full PNG, and final viewport PNG;
-- visual evidence detector can capture fixture evidence screenshots.
-
-### Phase 6: native visual matrix
-
-Implement one-call native matrix.
-
-Exit criteria:
-
-- all required native visual evidence screenshots are captured on every target;
-- JSONL assertions pass on every target;
-- Cursor call budget remains one call per target.
-
-### Phase 7: bridge visual matrix
-
-Implement one-call bridge matrix.
-
-Exit criteria:
-
-- all required bridge visual evidence screenshots are captured on every target;
-- bridge diagnostics assertions pass on every target;
-- JSONL assertions pass on every target.
-
-### Phase 8: abort cleanup
-
-Implement interrupted bridge run.
-
-Exit criteria:
-
-- no leftovers on any target;
-- no false success in JSONL;
-- target session stops cleanly.
-
-### Phase 9: docs and legacy cleanup
-
-Update:
-
-- `README.md`
-- `docs/cursor-live-smoke-checklist.md`
-- `docs/cursor-testing-lessons.md`
-- `docs/cursor-native-tool-visual-audit.md`
-
-They must state:
-
-- required release gate is `npm run smoke:platform:all`;
-- legacy smoke scripts are inner-loop/debug helpers;
-- `tmux` visual smoke is not the canonical cross-platform gate.
-
 ## Release bar
 
-A provider/runtime release is ready only after this exact command passes on the maintainer machine:
+A local provider/runtime release is ready only after this exact command passes on the maintainer machine:
 
 ```bash
 npm run smoke:platform:all
 ```
 
-The command runs doctor first and then all required targets and suites in one full gate execution.
+Cloud-runtime releases additionally require:
 
-## Gate replacement criteria
+```bash
+npm run smoke:cloud
+```
 
-Replace or redesign this platform runner if any of these become true:
-
-- Parallels Windows linked clones are unreliable.
-- Windows native cannot run the required ConPTY visual matrix.
-- macOS static SSH localhost cannot run the required PTY visual matrix.
-- Ubuntu local-container cannot run the required PTY visual matrix.
-- Packed install cannot be tested uniformly across all targets.
-- Artifact transfer cannot be made uniform across success and failure.
-- The visual card detector cannot reliably identify required deterministic cards.
-- The full gate exceeds the fixed Cursor invocation budget.
-- Node 24 + `node-pty` cannot be made reliable on Windows native.
-
-If the gate is replaced, document the new cross-platform release process before removing this one. Existing local smoke scripts remain inner-loop/debug helpers, not release gates.
-
-## Portability to other pi extensions
-
-Repo-specific pieces:
-
-- `platform-smoke.config.mjs`
-- expected package name
-- model IDs
-- scenario prompts
-- required visual card matrix
-- final markers
-
-Reusable pieces:
-
-- Crabbox target session manager
-- PTY/ConPTY capture
-- host-side ANSI render
-- artifact manifest writer
-- JSONL parser
-- visual evidence detector
-- process cleanup checker
-- target doctor
-
-The framework is successful when another pi extension can copy the runner and change only its config plus scenarios.
+`smoke:platform:all` runs doctor first and then all required local targets and suites in one full gate execution.

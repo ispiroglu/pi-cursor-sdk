@@ -46,15 +46,117 @@ import { join } from "node:path";
 describe("streamCursor native replay live run", () => {
 	beforeEach(resetCursorProviderTestState);
 
-it("waits for delayed turn-ended usage before emitting a native toolUse turn", async () => {
+	it("uses bounded approximate usage on the final native replay stop turn when no turn-ended usage arrives", async () => {
 		process.env.PI_CURSOR_NATIVE_TOOL_DISPLAY = "1";
 		const registeredTools: RegisteredTool[] = [];
 		await registerNativeToolDisplayForTest(registeredTools);
 
-		let resolveRun: (result: { id: string; status: "finished"; result: string }) => void = () => {};
+		let resolveRun: (result: {
+			id: string;
+			status: "finished";
+			result: string;
+			usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; totalTokens: number };
+		}) => void = () => {};
 		const runWait = vi.fn(
 			() =>
-				new Promise<{ id: string; status: "finished"; result: string }>((resolve) => {
+				new Promise<{
+					id: string;
+					status: "finished";
+					result: string;
+					usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; totalTokens: number };
+				}>((resolve) => {
+					resolveRun = resolve;
+				}),
+		);
+		const mockSend = vi.fn().mockImplementation(async (_msg: unknown, opts: { onDelta: CursorDeltaHandler }) => {
+			opts.onDelta({ update: { type: "text-delta", text: "I am checking files." } });
+			opts.onDelta({ update: { type: "tool-call-started", toolCall: { name: "read", args: { path: "README.md" } }, callId: "c1" } });
+			opts.onDelta({
+				update: {
+					type: "tool-call-completed",
+					toolCall: {
+						name: "read",
+						result: { status: "success", value: { content: "# pi-cursor-sdk" } },
+					},
+					callId: "c1",
+				},
+			});
+			return asMockCursorRun({
+				id: "run-1",
+				agentId: "agent-1",
+				status: "running",
+				wait: runWait,
+				cancel: vi.fn(),
+				supports: () => true,
+				unsupportedReason: () => undefined,
+			});
+		});
+		mockCreatedAgent({
+			agentId: "agent-1",
+			send: mockSend,
+			[Symbol.asyncDispose]: vi.fn().mockResolvedValue(undefined),
+		});
+
+		const firstEvents = await collectEvents(streamCursor(makeModel(), makeContext(), { apiKey: "test-key" }));
+		const firstDone = getDoneEvent(firstEvents);
+		const toolCall = firstDone.message.content.find(isToolCallBlock);
+		expect(firstDone.reason).toBe("toolUse");
+
+		const readTool = registeredTools.find((tool) => tool.name === "read");
+		const toolResult = await readTool!.execute(toolCall!.id, toolCall!.arguments, undefined, undefined, createExtensionTestContext());
+
+		resolveRun({
+			id: "run-1",
+			status: "finished",
+			result: "Final answer only.",
+			usage: { inputTokens: 500, outputTokens: 50, cacheReadTokens: 400, cacheWriteTokens: 10, totalTokens: 960 },
+		});
+
+		const replayContext = makeContext();
+		replayContext.messages = [
+			...replayContext.messages,
+			firstDone.message,
+			{
+				role: "toolResult",
+				toolCallId: toolCall!.id,
+				toolName: "read",
+				content: toolResult.content,
+				details: toolResult.details,
+				isError: false,
+				timestamp: 2,
+			},
+		];
+
+		const replayEvents = await collectEvents(streamCursor(makeModel(), replayContext, { apiKey: "test-key" }));
+		const replayDone = getDoneEvent(replayEvents);
+
+		expect(replayDone.reason).toBe("stop");
+		expect(collectTextDeltas(replayEvents)).toBe("Final answer only.");
+		expect(replayDone.message.usage.cacheRead).toBe(0);
+		expect(replayDone.message.usage.cacheWrite).toBe(0);
+		expect(replayDone.message.usage.input).toBeLessThan(500);
+		expect(replayDone.message.usage.totalTokens).toBeLessThan(500);
+	});
+
+	it("waits for delayed turn-ended usage before emitting a native toolUse turn", async () => {
+		process.env.PI_CURSOR_NATIVE_TOOL_DISPLAY = "1";
+		const registeredTools: RegisteredTool[] = [];
+		await registerNativeToolDisplayForTest(registeredTools);
+
+		let resolveRun: (result: {
+			id: string;
+			status: "finished";
+			result: string;
+			usage?: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; totalTokens: number };
+		}) => void = () => {};
+		const runWait = vi.fn(
+			() =>
+				new Promise<{
+					id: string;
+					status: "finished";
+					result: string;
+					usage?: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; totalTokens: number };
+				}>((resolve) => {
 					resolveRun = resolve;
 				}),
 		);
@@ -113,7 +215,7 @@ it("waits for delayed turn-ended usage before emitting a native toolUse turn", a
 			output: 612,
 			cacheRead: 24_000,
 			cacheWrite: 123,
-			totalTokens: 25_432 + 612,
+			totalTokens: 25_432 + 612 + 24_000 + 123,
 		});
 		expect(toolCall!.name).toBe("read");
 		expect(hasEventType(firstEvents, "toolcall_delta")).toBe(true);
@@ -126,7 +228,12 @@ it("waits for delayed turn-ended usage before emitting a native toolUse turn", a
 			terminate: false,
 		});
 
-		resolveRun({ id: "run-1", status: "finished", result: "Final answer only." });
+		resolveRun({
+			id: "run-1",
+			status: "finished",
+			result: "Final answer only.",
+			usage: { inputTokens: 500, outputTokens: 50, cacheReadTokens: 400, cacheWriteTokens: 10, totalTokens: 960 },
+		});
 
 		const replayContext = makeContext();
 		replayContext.messages = [
@@ -151,6 +258,7 @@ it("waits for delayed turn-ended usage before emitting a native toolUse turn", a
 		expect(replayText).toBe("Final answer only.");
 		expect(replayDone.reason).toBe("stop");
 		expect(replayDone.message.usage.input).not.toBe(25_432);
+		expect(replayDone.message.usage.input).not.toBe(500);
 		expect(replayDone.message.usage.cacheRead).toBe(0);
 		expect(replayDone.message.content).toEqual([{ type: "text", text: "Final answer only." }]);
 	});
@@ -324,7 +432,7 @@ it("waits for delayed turn-ended usage before emitting a native toolUse turn", a
 		expect(hasEventType(events, "toolcall_start")).toBe(false);
 		expect(collectThinkingDeltas(events)).toContain("Cursor subagent");
 		expect(done.reason).toBe("stop");
-		expect(done.message.usage).toMatchObject({ input: 31_000, output: 700, cacheRead: 30_000, cacheWrite: 0, totalTokens: 31_700 });
+		expect(done.message.usage).toMatchObject({ input: 31_000, output: 700, cacheRead: 30_000, cacheWrite: 0, totalTokens: 61_700 });
 	});
 
 	it("does not replay queued live-run tools that became inactive after the run started", async () => {

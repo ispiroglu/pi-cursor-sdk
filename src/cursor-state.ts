@@ -1,11 +1,14 @@
+import type { AgentModeOption } from "@cursor/sdk";
+import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { AgentModeOption } from "@cursor/sdk";
-import type {
-	ExtensionAPI,
-	ExtensionContext,
-} from "@earendil-works/pi-coding-agent";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import {
+	buildCursorToolManifestText,
+	CURSOR_TOOL_MANIFEST_ENV,
+	resolveCursorToolManifestEnabled,
+} from "./cursor-tool-manifest.js";
+import { runCursorSessionAgentCleanupCommand } from "./cursor-session-agent-cleanup.js";
 import {
 	CURSOR_HTTP1_ENTRY_TYPE,
 	CURSOR_HTTP1_ENV,
@@ -18,11 +21,6 @@ import {
 	setStoredCursorHttp1Enabled,
 	type CursorHttp1EntryData,
 } from "./cursor-http1.js";
-import {
-	buildCursorToolManifestText,
-	CURSOR_TOOL_MANIFEST_ENV,
-	resolveCursorToolManifestEnabled,
-} from "./cursor-tool-manifest.js";
 import {
 	buildCursorPiToolBridgeSnapshot,
 	CURSOR_PI_TOOL_BRIDGE_ENV,
@@ -37,12 +35,39 @@ import { isCursorModel } from "./cursor-model.js";
 import { registerCursorModelLifecycle } from "./cursor-model-lifecycle.js";
 import { asRecord } from "./cursor-record-utils.js";
 import { getCursorSessionScopeKey } from "./cursor-session-scope.js";
+import { refreshSessionCursorAgentConfig } from "./cursor-session-agent.js";
 import { getCursorModelMetadata } from "./model-discovery.js";
+import {
+	cursorFastDefaultsFromConfig,
+	getCursorSdkUserConfigPath,
+	loadCursorSdkUserConfig,
+	resolveCursorFastDefault,
+	saveCursorSdkUserConfig,
+	withCursorFastDefaults,
+	type CursorSdkConfig,
+} from "./cursor-config.js";
+import {
+	consumeCursorLocalForceOverride,
+	CURSOR_RUNTIME_ENTRY_TYPE,
+	formatCursorStatus,
+	getCursorCliConfig,
+	getCursorSessionConfig,
+	registerCursorCloudRuntimeControls,
+	resetCursorRuntimeStateForTests,
+	resolveCursorStatusRuntime,
+	restoreCursorCliState,
+	restoreSessionCursorRuntimeState,
+	type CursorRuntimeStateExtensionApi,
+} from "./cursor-runtime-state.js";
+
+export {
+	consumeCursorLocalForceOverride,
+	getCursorCliConfig,
+	getCursorSessionConfig,
+} from "./cursor-runtime-state.js";
 
 const FAST_ENTRY_TYPE = "cursor-fast-state";
 const MODE_ENTRY_TYPE = "cursor-mode-state";
-const GLOBAL_CONFIG_FILE = "cursor-sdk.json";
-const HTTP_CONFIG_FILE = "cursor-http.json";
 
 export type CursorAgentMode = AgentModeOption;
 
@@ -58,24 +83,10 @@ interface CursorModeEntryData {
 	mode: AgentModeOption;
 }
 
-interface CursorGlobalConfig {
-	fastDefaults?: Record<string, boolean>;
-}
-
-interface CursorHttpConfig {
-	enabled?: boolean;
-}
-
 type CursorRuntimeControlsExtensionApi = Pick<
 	ExtensionAPI,
-	| "appendEntry"
-	| "getFlag"
-	| "registerFlag"
-	| "registerCommand"
-	| "on"
-	| "getActiveTools"
-	| "getAllTools"
->;
+	"appendEntry" | "getFlag" | "registerFlag" | "registerCommand" | "on" | "getActiveTools" | "getAllTools"
+> & CursorRuntimeStateExtensionApi;
 
 type CursorCliModeState =
 	| { kind: "unset" }
@@ -94,9 +105,7 @@ export function isCursorAgentMode(value: unknown): value is AgentModeOption {
 	return value === "agent" || value === "plan";
 }
 
-export function parseCursorAgentMode(
-	raw: unknown,
-): AgentModeOption | undefined {
+export function parseCursorAgentMode(raw: unknown): AgentModeOption | undefined {
 	if (typeof raw !== "string") return undefined;
 	const mode = raw.trim();
 	return isCursorAgentMode(mode) ? mode : undefined;
@@ -105,11 +114,7 @@ export function parseCursorAgentMode(
 function isCursorFastEntryData(value: unknown): value is CursorFastEntryData {
 	const record = asRecord(value);
 	if (!record) return false;
-	return (
-		(typeof record.modelId === "string" ||
-			typeof record.baseModelId === "string") &&
-		typeof record.fast === "boolean"
-	);
+	return (typeof record.modelId === "string" || typeof record.baseModelId === "string") && typeof record.fast === "boolean";
 }
 
 function getCursorFastEntryModelId(data: CursorFastEntryData): string {
@@ -120,56 +125,23 @@ function isCursorModeEntryData(value: unknown): value is CursorModeEntryData {
 	return isCursorAgentMode(asRecord(value)?.mode);
 }
 
-function parseCursorGlobalConfig(
-	value: unknown,
-): CursorGlobalConfig | undefined {
-	const record = asRecord(value);
-	if (!record) return undefined;
-	const { fastDefaults } = record;
-	if (fastDefaults === undefined) return {};
-	const fastDefaultsRecord = asRecord(fastDefaults);
-	if (!fastDefaultsRecord) return undefined;
-	return {
-		fastDefaults: Object.fromEntries(
-			Object.entries(fastDefaultsRecord).filter(
-				(entry): entry is [string, boolean] => typeof entry[1] === "boolean",
-			),
-		),
-	};
+function getConfigPath(): string {
+	return getCursorSdkUserConfigPath();
 }
 
-function getConfigPath(): string {
-	return join(getAgentDir(), GLOBAL_CONFIG_FILE);
-}
+const HTTP_CONFIG_FILE = "cursor-http.json";
 
 function getHttpConfigPath(): string {
 	return join(getAgentDir(), HTTP_CONFIG_FILE);
 }
 
 function loadGlobalFastPreferences(): Map<string, boolean> {
-	const path = getConfigPath();
-	if (!existsSync(path)) return new Map();
-	try {
-		const parsed = parseCursorGlobalConfig(
-			JSON.parse(readFileSync(path, "utf-8")),
-		);
-		return new Map(Object.entries(parsed?.fastDefaults ?? {}));
-	} catch {
-		return new Map();
-	}
+	return cursorFastDefaultsFromConfig(loadCursorSdkUserConfig());
 }
 
 function saveGlobalFastPreferences(): void {
-	const path = getConfigPath();
-	mkdirSync(dirname(path), { recursive: true });
-	const config: CursorGlobalConfig = {
-		fastDefaults: Object.fromEntries(
-			[...globalFastPreferences.entries()].sort(([a], [b]) =>
-				a.localeCompare(b),
-			),
-		),
-	};
-	writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+	const currentConfig: CursorSdkConfig = loadCursorSdkUserConfig();
+	saveCursorSdkUserConfig(withCursorFastDefaults(currentConfig, globalFastPreferences));
 }
 
 function loadGlobalCursorHttp1Enabled(): boolean | undefined {
@@ -186,17 +158,14 @@ function loadGlobalCursorHttp1Enabled(): boolean | undefined {
 function saveGlobalCursorHttp1Enabled(enabled: boolean): void {
 	const path = getHttpConfigPath();
 	mkdirSync(dirname(path), { recursive: true });
-	const config: CursorHttpConfig = { enabled };
+	const config: { enabled: boolean } = { enabled };
 	writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
 }
 
-function restoreSessionFastPreferences(ctx: {
-	sessionManager: Pick<ExtensionContext["sessionManager"], "getBranch">;
-}): void {
+function restoreSessionFastPreferences(branch: readonly SessionEntry[]): void {
 	sessionFastPreferences.clear();
-	for (const entry of ctx.sessionManager.getBranch()) {
-		if (entry.type !== "custom" || entry.customType !== FAST_ENTRY_TYPE)
-			continue;
+	for (const entry of branch) {
+		if (entry.type !== "custom" || entry.customType !== FAST_ENTRY_TYPE) continue;
 		if (isCursorFastEntryData(entry.data)) {
 			const modelId = getCursorFastEntryModelId(entry.data);
 			if (modelId) sessionFastPreferences.set(modelId, entry.data.fast);
@@ -204,35 +173,35 @@ function restoreSessionFastPreferences(ctx: {
 	}
 }
 
-function restoreSessionCursorMode(ctx: {
-	sessionManager: Pick<ExtensionContext["sessionManager"], "getBranch">;
-}): void {
+function restoreSessionCursorMode(branch: readonly SessionEntry[]): void {
 	sessionCursorAgentMode = undefined;
-	for (const entry of ctx.sessionManager.getBranch()) {
-		if (entry.type !== "custom" || entry.customType !== MODE_ENTRY_TYPE)
-			continue;
+	for (const entry of branch) {
+		if (entry.type !== "custom" || entry.customType !== MODE_ENTRY_TYPE) continue;
 		if (isCursorModeEntryData(entry.data)) {
 			sessionCursorAgentMode = entry.data.mode;
 		}
 	}
 }
 
-function restoreSessionCursorHttp1(ctx: {
-	sessionManager: Pick<ExtensionContext["sessionManager"], "getBranch">;
-}): void {
+function restoreSessionCursorPreferences(ctx: { sessionManager: Pick<ExtensionContext["sessionManager"], "getBranch"> }): void {
+	const branch = ctx.sessionManager.getBranch();
+	restoreSessionCursorRuntimeState(branch);
+	restoreSessionFastPreferences(branch);
+	restoreSessionCursorMode(branch);
+	restoreSessionCursorHttp1(branch);
+}
+
+function restoreSessionCursorHttp1(branch: readonly SessionEntry[]): void {
 	setStoredCursorHttp1Enabled(undefined);
-	for (const entry of ctx.sessionManager.getBranch()) {
-		if (entry.type !== "custom" || entry.customType !== CURSOR_HTTP1_ENTRY_TYPE)
-			continue;
+	for (const entry of branch) {
+		if (entry.type !== "custom" || entry.customType !== CURSOR_HTTP1_ENTRY_TYPE) continue;
 		if (isCursorHttp1EntryData(entry.data)) {
 			setStoredCursorHttp1Enabled(entry.data.enabled);
 		}
 	}
 }
 
-function getFastPreferenceModelId(
-	metadata: NonNullable<ReturnType<typeof getCursorModelMetadata>>,
-): string {
+function getFastPreferenceModelId(metadata: NonNullable<ReturnType<typeof getCursorModelMetadata>>): string {
 	return metadata.selectionModelId || metadata.baseModelId;
 }
 
@@ -240,29 +209,25 @@ function getVirtualFastBaseModelId(modelId: string): string {
 	return modelId.replace(/:(?:fast|slow)$/, "");
 }
 
-function getStoredFastPreference(
+function getMapFastPreference(
+	map: Map<string, boolean>,
 	metadata: NonNullable<ReturnType<typeof getCursorModelMetadata>>,
 ): boolean | undefined {
 	const preferenceModelId = getFastPreferenceModelId(metadata);
-	return (
-		sessionFastPreferences.get(preferenceModelId) ??
-		(preferenceModelId !== metadata.baseModelId
-			? sessionFastPreferences.get(metadata.baseModelId)
-			: undefined) ??
-		globalFastPreferences.get(preferenceModelId) ??
-		(preferenceModelId !== metadata.baseModelId
-			? globalFastPreferences.get(metadata.baseModelId)
-			: undefined)
-	);
+	return map.get(preferenceModelId) ?? (preferenceModelId !== metadata.baseModelId ? map.get(metadata.baseModelId) : undefined);
 }
 
 function getEffectiveFast(modelId: string): boolean | undefined {
 	const metadata = getCursorModelMetadata(modelId);
 	if (!metadata?.supportsFast) return undefined;
-	if (cliForceNoFast) return false;
-	if (cliForceFast) return true;
-	if (metadata.fastOverride !== undefined) return metadata.fastOverride;
-	return getStoredFastPreference(metadata) ?? metadata.defaultFast;
+	return resolveCursorFastDefault({
+		cliForceNoFast,
+		cliForceFast,
+		aliasOverride: metadata.fastOverride,
+		sessionValue: getMapFastPreference(sessionFastPreferences, metadata),
+		userValue: getMapFastPreference(globalFastPreferences, metadata),
+		modelDefault: metadata.defaultFast,
+	}).value;
 }
 
 function formatInvalidCursorMode(raw: string): string {
@@ -282,11 +247,7 @@ export function resolveCursorAgentMode(): CursorAgentModeResolution {
 		case "valid":
 			return { kind: "valid", mode: cliCursorModeState.mode };
 		case "invalid":
-			return {
-				kind: "invalid",
-				raw: cliCursorModeState.raw,
-				message: cliCursorModeState.message,
-			};
+			return { kind: "invalid", raw: cliCursorModeState.raw, message: cliCursorModeState.message };
 		case "unset":
 			return { kind: "valid", mode: getStoredCursorAgentMode() };
 	}
@@ -298,35 +259,24 @@ export function getCursorProviderAgentModeOrThrow(): AgentModeOption {
 	return resolution.mode;
 }
 
-function formatCursorStatus(fast: boolean | undefined): string {
-	const parts = [
-		fast === true
-			? "cursor-fast:on"
-			: fast === false
-				? "cursor-fast:off"
-				: "cursor-fast:n/a",
-	];
-	const modeResolution = resolveCursorAgentMode();
-	if (resolveCursorHttp1Enabled()) parts.push("http1");
-	if (modeResolution.kind === "invalid") {
-		parts.push("mode invalid");
-	} else if (modeResolution.mode === "plan") {
-		parts.push("plan");
-	}
-	return parts.join(" · ");
-}
+type CursorStatusContext = Pick<ExtensionContext, "cwd"> & Partial<Pick<ExtensionContext, "isProjectTrusted">>;
 
-function updateCursorStatus(
-	ctx: Pick<ExtensionContext, "model" | "ui">,
-	model = ctx.model,
-): void {
+function updateCursorStatus(ctx: CursorStatusContext & Pick<ExtensionContext, "model" | "ui">, model = ctx.model): void {
 	if (!model || !isCursorModel(model)) {
 		ctx.ui.setStatus("cursor", undefined);
 		return;
 	}
 	const metadata = getCursorModelMetadata(model.id);
-	const fast = metadata?.supportsFast ? getEffectiveFast(model.id) : undefined;
-	ctx.ui.setStatus("cursor", formatCursorStatus(fast));
+	const resolution = resolveCursorStatusRuntime(ctx);
+	const modeResolution = resolveCursorAgentMode();
+	const mode = modeResolution.kind === "invalid" ? "invalid" : modeResolution.mode;
+	if (resolution.kind === "invalid") {
+		ctx.ui.setStatus("cursor", formatCursorStatus("invalid", undefined, mode));
+		return;
+	}
+	const runtime = resolution.runtime.value;
+	const fast = runtime === "cloud" ? undefined : metadata?.supportsFast ? getEffectiveFast(model.id) : undefined;
+	ctx.ui.setStatus("cursor", formatCursorStatus(runtime, fast, mode));
 }
 
 function getCurrentCursorMetadata(ctx: Pick<ExtensionContext, "model">) {
@@ -335,11 +285,7 @@ function getCurrentCursorMetadata(ctx: Pick<ExtensionContext, "model">) {
 	return getCursorModelMetadata(model.id);
 }
 
-function restoreMapValue(
-	map: Map<string, boolean>,
-	key: string,
-	previous: boolean | undefined,
-): void {
+function restoreMapValue(map: Map<string, boolean>, key: string, previous: boolean | undefined): void {
 	if (previous === undefined) {
 		map.delete(key);
 	} else {
@@ -347,11 +293,7 @@ function restoreMapValue(
 	}
 }
 
-function persistFastPreference(
-	pi: Pick<ExtensionAPI, "appendEntry">,
-	modelId: string,
-	fast: boolean,
-): void {
+function persistFastPreference(pi: Pick<ExtensionAPI, "appendEntry">, modelId: string, fast: boolean): void {
 	const previousSession = sessionFastPreferences.get(modelId);
 	const previousGlobal = globalFastPreferences.get(modelId);
 	let savedGlobal = false;
@@ -375,10 +317,7 @@ function persistFastPreference(
 	}
 }
 
-function persistCursorModePreference(
-	pi: Pick<ExtensionAPI, "appendEntry">,
-	mode: AgentModeOption,
-): void {
+function persistCursorModePreference(pi: Pick<ExtensionAPI, "appendEntry">, mode: AgentModeOption): void {
 	const previousMode = sessionCursorAgentMode;
 	sessionCursorAgentMode = mode;
 	try {
@@ -389,10 +328,7 @@ function persistCursorModePreference(
 	}
 }
 
-function persistCursorHttp1Preference(
-	pi: Pick<ExtensionAPI, "appendEntry">,
-	enabled: boolean,
-): void {
+function persistCursorHttp1Preference(pi: Pick<ExtensionAPI, "appendEntry">, enabled: boolean): void {
 	const previousSession = getStoredCursorHttp1Enabled();
 	const previousGlobal = getGlobalCursorHttp1Enabled();
 	let savedGlobal = false;
@@ -429,26 +365,19 @@ function restoreCliCursorMode(raw: boolean | string | undefined): void {
 	cliCursorModeState = { kind: "invalid", raw: rawText, message };
 }
 
-function notifyInvalidCursorModeIfCursorActive(
-	ctx: Pick<ExtensionContext, "hasUI" | "mode" | "ui">,
-): void {
+function notifyInvalidCursorModeIfCursorActive(ctx: Pick<ExtensionContext, "hasUI" | "mode" | "ui">): void {
 	const modeResolution = resolveCursorAgentMode();
-	if (modeResolution.kind !== "invalid" || !ctx.hasUI || ctx.mode !== "tui")
-		return;
+	if (modeResolution.kind !== "invalid" || !ctx.hasUI || ctx.mode !== "tui") return;
 	const scopeKey = getCursorSessionScopeKey();
 	if (invalidCursorModeNotifiedSessionScopeKeys.has(scopeKey)) return;
 	invalidCursorModeNotifiedSessionScopeKeys.add(scopeKey);
 	ctx.ui.notify(modeResolution.message, "error");
 }
 
-function formatEffectiveCursorSettingSourcesLabel(
-	raw: string | undefined = process.env[CURSOR_SETTING_SOURCES_ENV],
-): string {
+function formatEffectiveCursorSettingSourcesLabel(raw: string | undefined = process.env[CURSOR_SETTING_SOURCES_ENV]): string {
 	const effective = resolveCursorSettingSources(raw);
 	const effectiveLabel = effective === undefined ? "none" : effective.join(",");
-	const rawLabel = raw?.trim()
-		? raw.trim()
-		: `(unset → ${DEFAULT_CURSOR_SETTING_SOURCES.join(",")})`;
+	const rawLabel = raw?.trim() ? raw.trim() : `(unset → ${DEFAULT_CURSOR_SETTING_SOURCES.join(",")})`;
 	return `${rawLabel} (effective: ${effectiveLabel})`;
 }
 
@@ -472,18 +401,11 @@ export function formatCursorToolsDebugReport(
 		try {
 			bridgeSnapshot = buildCursorPiToolBridgeSnapshot(pi);
 		} catch {
-			lines.push(
-				"Pi bridge snapshot: unavailable (extension tool APIs required).",
-			);
+			lines.push("Pi bridge snapshot: unavailable (extension tool APIs required).");
 		}
 	}
 
-	lines.push(
-		buildCursorToolManifestText({
-			bridgeSnapshot,
-			piBridgeEnabled: bridgeEnabled,
-		}),
-	);
+	lines.push(buildCursorToolManifestText({ bridgeSnapshot, piBridgeEnabled: bridgeEnabled }));
 	return lines.join("\n");
 }
 
@@ -499,25 +421,21 @@ function emitCursorToolsDebugReport(
 	console.log(report);
 }
 
-export function getEffectiveFastForModelId(
-	modelId: string,
-): boolean | undefined {
+export function getEffectiveFastForModelId(modelId: string): boolean | undefined {
 	return getEffectiveFast(modelId);
 }
 
-export function registerCursorRuntimeControls(
-	pi: CursorRuntimeControlsExtensionApi,
-): void {
+export function registerCursorRuntimeControls(pi: CursorRuntimeControlsExtensionApi): void {
+	registerCursorCloudRuntimeControls(pi, { refreshStatus: updateCursorStatus });
+
 	pi.registerFlag("cursor-fast", {
-		description:
-			"Force Cursor fast mode for this run when the selected Cursor model supports it",
+		description: "Force Cursor fast mode for this run when the selected Cursor model supports it",
 		type: "boolean",
 		default: false,
 	});
 
 	pi.registerFlag("cursor-no-fast", {
-		description:
-			"Force Cursor fast mode off for this run when the selected Cursor model supports it",
+		description: "Force Cursor fast mode off for this run when the selected Cursor model supports it",
 		type: "boolean",
 		default: false,
 	});
@@ -561,10 +479,7 @@ export function registerCursorRuntimeControls(
 				persistFastPreference(pi, preferenceModelId, next);
 			} catch (error) {
 				updateCursorStatus(ctx);
-				ctx.ui.notify(
-					`Failed to save Cursor fast preference: ${error instanceof Error ? error.message : String(error)}`,
-					"error",
-				);
+				ctx.ui.notify(`Failed to save Cursor fast preference: ${error instanceof Error ? error.message : String(error)}`, "error");
 				return;
 			}
 			updateCursorStatus(ctx);
@@ -573,8 +488,7 @@ export function registerCursorRuntimeControls(
 	});
 
 	pi.registerCommand("cursor-tools", {
-		description:
-			"Show live Cursor tool surfaces for this session (maintainer debug)",
+		description: "Show live Cursor tool surfaces for this session (maintainer debug)",
 		handler: async (_args, ctx) => {
 			emitCursorToolsDebugReport(pi, ctx);
 		},
@@ -646,6 +560,35 @@ export function registerCursorRuntimeControls(
 		},
 	});
 
+	pi.registerCommand("cursor-local-resume-cleanup", {
+		description: "Dry-run or delete recorded superseded local Cursor SDK agents",
+		handler: async (args, ctx) => {
+			await runCursorSessionAgentCleanupCommand(pi, args, ctx);
+		},
+	});
+
+	pi.registerCommand("cursor-refresh-config", {
+		description: "Refresh filesystem Cursor config in the current pooled SDK agent",
+		handler: async (_args, ctx) => {
+			if (!isCursorModel(ctx.model)) {
+				ctx.ui.notify("Cursor config refresh is available only for Cursor models.", "info");
+				return;
+			}
+			try {
+				const result = await refreshSessionCursorAgentConfig();
+				const messages: Record<typeof result, string> = {
+					reloaded: "Cursor SDK agent config refreshed.",
+					"no-agent": "No Cursor SDK agent exists yet; config will load on the next Cursor run.",
+					busy: "Cursor SDK agent is still finalizing a run; retry /cursor-refresh-config after it finishes.",
+					unsupported: "Current Cursor SDK agent does not support config reload.",
+				};
+				ctx.ui.notify(messages[result], result === "reloaded" ? "info" : "warning");
+			} catch (error) {
+				ctx.ui.notify(`Failed to refresh Cursor config: ${error instanceof Error ? error.message : String(error)}`, "error");
+			}
+		},
+	});
+
 	pi.registerCommand("cursor-mode", {
 		description: "Set Cursor SDK conversation mode: agent or plan",
 		handler: async (args, ctx) => {
@@ -656,25 +599,16 @@ export function registerCursorRuntimeControls(
 				if (modeResolution.kind === "invalid") {
 					ctx.ui.notify(`${modeResolution.message} ${usage}`, "error");
 				} else {
-					ctx.ui.notify(
-						`Cursor mode is ${modeResolution.mode}. ${usage}`,
-						"info",
-					);
+					ctx.ui.notify(`Cursor mode is ${modeResolution.mode}. ${usage}`, "info");
 				}
 				return;
 			}
 			if (!mode) {
-				ctx.ui.notify(
-					`Invalid Cursor mode "${args.trim()}". ${usage}`,
-					"error",
-				);
+				ctx.ui.notify(`Invalid Cursor mode "${args.trim()}". ${usage}`, "error");
 				return;
 			}
 			if (cliCursorModeState.kind === "valid") {
-				ctx.ui.notify(
-					`Cursor mode is forced to ${cliCursorModeState.mode} by --cursor-mode`,
-					"info",
-				);
+				ctx.ui.notify(`Cursor mode is forced to ${cliCursorModeState.mode} by --cursor-mode`, "info");
 				return;
 			}
 			const clearedInvalidCliMode = cliCursorModeState.kind === "invalid";
@@ -683,10 +617,7 @@ export function registerCursorRuntimeControls(
 				if (clearedInvalidCliMode) cliCursorModeState = { kind: "unset" };
 			} catch (error) {
 				updateCursorStatus(ctx);
-				ctx.ui.notify(
-					`Failed to save Cursor mode preference: ${error instanceof Error ? error.message : String(error)}`,
-					"error",
-				);
+				ctx.ui.notify(`Failed to save Cursor mode preference: ${error instanceof Error ? error.message : String(error)}`, "error");
 				return;
 			}
 			updateCursorStatus(ctx);
@@ -699,15 +630,19 @@ export function registerCursorRuntimeControls(
 		},
 	});
 
+	pi.on("session_tree", (_event, ctx) => {
+		restoreSessionCursorPreferences(ctx);
+		updateCursorStatus(ctx);
+	});
+
 	registerCursorModelLifecycle(pi, {
 		sessionStart: (_event, ctx) => {
 			globalFastPreferences = loadGlobalFastPreferences();
 			setGlobalCursorHttp1Enabled(loadGlobalCursorHttp1Enabled());
 			cliForceFast = pi.getFlag("cursor-fast") === true;
 			cliForceNoFast = pi.getFlag("cursor-no-fast") === true;
-			restoreSessionFastPreferences(ctx);
-			restoreSessionCursorMode(ctx);
-			restoreSessionCursorHttp1(ctx);
+			restoreCursorCliState(pi);
+			restoreSessionCursorPreferences(ctx);
 			restoreCliCursorMode(pi.getFlag("cursor-mode"));
 		},
 		sync: (ctx) => {
@@ -722,6 +657,7 @@ function resetCursorModeStateForTests(): void {
 	setGlobalCursorHttp1Enabled(undefined);
 	setStoredCursorHttp1Enabled(undefined);
 	cliCursorModeState = { kind: "unset" };
+	resetCursorRuntimeStateForTests();
 	invalidCursorModeNotifiedSessionScopeKeys.clear();
 }
 
@@ -729,6 +665,7 @@ export const __testUtils = {
 	FAST_ENTRY_TYPE,
 	MODE_ENTRY_TYPE,
 	CURSOR_HTTP1_ENTRY_TYPE,
+	RUNTIME_ENTRY_TYPE: CURSOR_RUNTIME_ENTRY_TYPE,
 	DEFAULT_CURSOR_AGENT_MODE,
 	getConfigPath,
 	getHttpConfigPath,
@@ -736,8 +673,7 @@ export const __testUtils = {
 	loadGlobalCursorHttp1Enabled,
 	sessionFastPreferences,
 	getSessionCursorAgentMode: () => sessionCursorAgentMode,
-	getCliCursorAgentMode: () =>
-		cliCursorModeState.kind === "valid" ? cliCursorModeState.mode : undefined,
+	getCliCursorAgentMode: () => (cliCursorModeState.kind === "valid" ? cliCursorModeState.mode : undefined),
 	getCliCursorModeState: () => cliCursorModeState,
 	resetCursorModeStateForTests,
 };

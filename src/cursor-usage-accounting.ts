@@ -36,7 +36,7 @@ export function getCursorPromptOptions(model: Model<Api>): CursorUsagePromptOpti
 
 function getNonNegativeTokenCount(record: Record<string, unknown> | undefined, key: string): number | undefined {
 	const value = getNumber(record, key);
-	return value === undefined ? undefined : Math.max(0, Math.floor(value));
+	return value === undefined || value < 0 ? undefined : Math.floor(value);
 }
 
 export function readCursorSdkTurnUsage(value: unknown): CursorSdkTurnUsage | undefined {
@@ -84,12 +84,21 @@ export function estimateCursorContextTotalTokens(partial: AssistantMessage, mode
 	return estimateCursorContextTokens(withAssistantMessage(context, partial), getCursorPromptOptions(model));
 }
 
+export function isCursorSdkUsageSafeForPiMessage(turnUsage: CursorSdkTurnUsage, model: Model<Api>): boolean {
+	const counts = [turnUsage.inputTokens, turnUsage.outputTokens, turnUsage.cacheReadTokens, turnUsage.cacheWriteTokens];
+	return (
+		counts.every((count) => Number.isFinite(count) && count >= 0) &&
+		turnUsage.outputTokens <= model.maxTokens &&
+		turnUsage.inputTokens + turnUsage.outputTokens + turnUsage.cacheReadTokens + turnUsage.cacheWriteTokens <= model.contextWindow
+	);
+}
+
 export function applyCursorSdkUsage(partial: AssistantMessage, turnUsage: CursorSdkTurnUsage): void {
 	partial.usage.input = turnUsage.inputTokens;
 	partial.usage.output = turnUsage.outputTokens;
 	partial.usage.cacheRead = turnUsage.cacheReadTokens;
 	partial.usage.cacheWrite = turnUsage.cacheWriteTokens;
-	partial.usage.totalTokens = turnUsage.inputTokens + turnUsage.outputTokens;
+	partial.usage.totalTokens = turnUsage.inputTokens + turnUsage.outputTokens + turnUsage.cacheReadTokens + turnUsage.cacheWriteTokens;
 }
 
 export function applyCursorApproximateUsage(partial: AssistantMessage, model: Model<Api>, context: Context, sessionInputTokens: number): void {
@@ -111,8 +120,9 @@ export function applyCursorUsage(
 	sessionInputTokens: number,
 	sdkUsage?: { turn?: CursorSdkTurnUsage },
 ): void {
-	if (sdkUsage?.turn) {
-		applyCursorSdkUsage(partial, sdkUsage.turn);
+	const usage = sdkUsage?.turn;
+	if (usage && isCursorSdkUsageSafeForPiMessage(usage, model)) {
+		applyCursorSdkUsage(partial, usage);
 		return;
 	}
 	applyCursorApproximateUsage(partial, model, context, sessionInputTokens);

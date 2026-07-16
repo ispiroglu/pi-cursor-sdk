@@ -1,10 +1,10 @@
 # Cursor Live Smoke Checklist
 
-> **Platform Smoke (new):** The required cross-platform release gate is `npm run smoke:platform:doctor && npm run smoke:platform:all`. See [docs/platform-smoke.md](./platform-smoke.md) for the full contract. The manual checks below remain useful inner-loop/debug tools but are not the required release gate.
+> **Platform Smoke:** The required local cross-platform release gate is `npm run smoke:platform:all`; it runs doctor first. Cloud-runtime changes also require `npm run smoke:cloud`. See [docs/platform-smoke.md](./platform-smoke.md) for the full contract. The manual checks below remain useful inner-loop/debug tools but are not the required release gate.
 
 ## Purpose
 
-Use this manual checklist during development and debugging of Cursor provider/runtime changes. Unit tests and mocks are necessary, but they are not enough for this extension. See [Cursor testing lessons](./cursor-testing-lessons.md) for auth/isolated-harness pitfalls and the plan-mode replay regression that motivated recent hardening. Always assume every runtime surface is in scope. For release readiness, run the platform gate in [docs/platform-smoke.md](./platform-smoke.md); this checklist is inner-loop evidence only.
+Use this manual checklist during development and debugging of Cursor provider/runtime changes. Unit tests and mocks are necessary, but they are not enough for this extension. See [Cursor testing lessons](./cursor-testing-lessons.md) for auth/isolated-harness pitfalls and the plan-mode replay regression that motivated recent hardening. For release readiness, run the local platform gate in [docs/platform-smoke.md](./platform-smoke.md), plus `npm run smoke:cloud` for cloud-runtime changes; this checklist is inner-loop evidence only.
 
 ## Inner-loop rule
 
@@ -67,8 +67,8 @@ The replay scan flags only error `toolResult` / error assistant messages with `T
 
 Pass criteria:
 
-- `pi --version` reports pi 0.80.2 for this cutover baseline.
-- `npm ls` shows `@cursor/sdk@1.0.22` and local `@earendil-works/*@0.80.2` packages.
+- `pi --version` reports pi 0.80.7 for this cutover baseline.
+- `npm ls` shows `@cursor/sdk@1.0.23` and local `@earendil-works/*@0.80.7` packages.
 - `cursor/composer-2-5` appears in the model list.
 - No Cursor key or auth token is printed.
 - If neither `~/.pi/agent/auth.json` cursor auth nor `CURSOR_API_KEY` is available, stop and report the live smoke as blocked.
@@ -124,8 +124,8 @@ Observe with `tmux capture-pane -pt "$SESSION"` or attach manually.
 
 Pass criteria:
 
-- Footer shows `(cursor) composer-2-5`. With `--cursor-no-fast`, Cursor fast mode is off and the Cursor extension status should show `cursor-fast:off`; ignore unrelated status text from other extensions.
-- The run uses pi 0.80.2 `--session-id` successfully.
+- Footer shows `(cursor) composer-2-5`. With `--cursor-no-fast`, Cursor fast mode is off and the Cursor extension status should show `cursor:local · fast:off`; ignore unrelated status text from other extensions.
+- The run uses pi 0.80.7 `--session-id` successfully.
 - Assistant answer appears correctly.
 - `/session` shows one user and one assistant message for the simple run.
 - Persisted JSONL has one assistant message. If the screen appears duplicated, inspect JSONL before deciding whether it is a rendering bug.
@@ -133,7 +133,7 @@ Pass criteria:
 
 ## 4. Focused visual card/color rendering check
 
-This is the canonical inner-loop visual debug path for Cursor provider/runtime changes. It requires offscreen TUI visual inspection, not only JSONL or code review. Use pi 0.80.2, `@cursor/sdk@1.0.22`, a fresh temporary session dir, Cursor SDK `plan` mode, native replay enabled, and the checked-in visual runner. The runner resolves `pi` by directly walking the parent `PATH`, uses `process.execPath` for Node, and prepends that Node directory for both prereq checks and tmux launches so `#!/usr/bin/env node` shims use the validated Node. The default matrix is native replay only: native replay registration is forced on, settings sources are `none`, the pi bridge is off, overlapping built-in pi tools are not exposed, and inherited Cursor SDK event-debug artifact env is cleared. With `--event-debug`, debug capture writes to a deterministic directory under `VISUAL_DIR`.
+This is the canonical inner-loop visual debug path for Cursor provider/runtime changes. It requires offscreen TUI visual inspection, not only JSONL or code review. Use pi 0.80.7, `@cursor/sdk@1.0.23`, a fresh temporary session dir, Cursor SDK `plan` mode, native replay enabled, and the checked-in visual runner. The runner resolves `pi` by directly walking the parent `PATH`, uses `process.execPath` for Node, and prepends that Node directory for both prereq checks and tmux launches so `#!/usr/bin/env node` shims use the validated Node. The default matrix is native replay only: native replay registration is forced on, settings sources are `none`, the pi bridge is off, overlapping built-in pi tools are not exposed, and inherited Cursor SDK event-debug artifact env is cleared. With `--event-debug`, debug capture writes to a deterministic directory under `VISUAL_DIR`.
 
 ```bash
 VISUAL_DIR="$(mktemp -d /tmp/pi-cursor-sdk-1016-visual.XXXXXX)"

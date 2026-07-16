@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { matchesWrappedLineAt } from "./wrapped-line-match.mjs";
 
 function pngSize(path) {
 	try {
@@ -16,10 +17,10 @@ function safeFileName(id) {
 	return String(id).replace(/[^A-Za-z0-9_.-]+/g, "-");
 }
 
-function makeRegex(spec) {
-	if (!spec?.pattern) return undefined;
+function makeRegex(spec, key = "pattern") {
+	if (!spec?.[key]) return undefined;
 	try {
-		return new RegExp(spec.pattern, spec.flags ?? "i");
+		return new RegExp(spec[key], spec.flags ?? "i");
 	} catch {
 		return undefined;
 	}
@@ -28,11 +29,9 @@ function makeRegex(spec) {
 export function findVisualEvidenceItems(lines, specs = []) {
 	return specs.map((spec) => {
 		const regex = makeRegex(spec);
+		const wrappedRegex = makeRegex(spec, "wrappedPattern");
 		if (!regex) return { id: spec.id, ok: false, error: `invalid regex: ${spec.pattern}` };
-		const lineIndex = lines.findIndex((line) => {
-			regex.lastIndex = 0;
-			return regex.test(line);
-		});
+		const lineIndex = lines.findIndex((_line, index) => matchesWrappedLineAt(lines, index, regex, wrappedRegex));
 		if (lineIndex === -1) return { id: spec.id, ok: false, pattern: spec.pattern };
 		return { id: spec.id, ok: true, pattern: spec.pattern, lineIndex, line: lines[lineIndex] };
 	});
